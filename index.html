@@ -131,7 +131,7 @@
     .phase.rest { color: var(--rest); }
     .phase.ready, .phase.done { color: var(--muted); }
     .clock {
-      font-size: 4.2rem;
+      font-size: 3.4rem;
       font-variant-numeric: tabular-nums;
       font-weight: 700;
       line-height: 1;
@@ -189,18 +189,18 @@
   <section id="panel-tabata" class="panel">
     <div class="timer-card">
       <div id="phase" class="phase ready">Ready</div>
-      <div id="clock" class="clock">20</div>
-      <div id="meta" class="meta">Round 0 / 8</div>
+      <div id="clock" class="clock">25:00</div>
+      <div id="meta" class="meta">Round 0 / 4</div>
       <div class="controls">
         <button type="button" class="primary" id="startBtn">Start</button>
         <button type="button" class="secondary" id="pauseBtn">Pause</button>
         <button type="button" class="secondary" id="resetBtn">Reset</button>
       </div>
       <div class="settings">
-        <label>Work (sec)<input id="workSec" type="number" min="5" max="300" value="20" /></label>
-        <label>Rest (sec)<input id="restSec" type="number" min="0" max="300" value="10" /></label>
-        <label>Rounds<input id="rounds" type="number" min="1" max="40" value="8" /></label>
-        <label>Prep (sec)<input id="prepSec" type="number" min="0" max="60" value="3" /></label>
+        <label>Work (min)<input id="workMin" type="number" min="1" max="180" step="1" value="25" /></label>
+        <label>Rest (min)<input id="restMin" type="number" min="0" max="60" step="1" value="5" /></label>
+        <label>Rounds<input id="rounds" type="number" min="1" max="40" value="4" /></label>
+        <label>Prep (min)<input id="prepMin" type="number" min="0" max="10" step="1" value="0" /></label>
       </div>
       <div class="link-task">
         <h2>Focus task (optional)</h2>
@@ -315,17 +315,30 @@
       fillFocus();
     };
 
-    // Tabata engine
+    // Tabata engine (settings in minutes; clock shows m:ss)
     const phaseEl = document.getElementById("phase");
     const clockEl = document.getElementById("clock");
     const metaEl = document.getElementById("meta");
     let timer = null;
     let running = false;
-    let phase = "ready"; // ready | prep | work | rest | done
-    let remaining = 20;
+    let phase = "ready";
+    let remaining = 25 * 60;
     let round = 0;
-    let totalRounds = 8;
+    let totalRounds = 4;
 
+    function minsInput(id, fallback) {
+      const n = Number(document.getElementById(id).value);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
+    }
+    function workSecs() { return Math.max(1, minsInput("workMin", 25)) * 60; }
+    function restSecs() { return Math.max(0, minsInput("restMin", 5)) * 60; }
+    function prepSecs() { return Math.max(0, minsInput("prepMin", 0)) * 60; }
+    function fmt(secs) {
+      const s = Math.max(0, Math.floor(secs));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return m + ":" + String(r).padStart(2, "0");
+    }
     function beep(high) {
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -338,7 +351,6 @@
         setTimeout(() => { o.stop(); ctx.close(); }, high ? 180 : 120);
       } catch (_) {}
     }
-
     function setPhase(p, secs) {
       phase = p;
       remaining = secs;
@@ -347,26 +359,23 @@
       document.body.classList.remove("phase-work", "phase-rest");
       if (p === "work") document.body.classList.add("phase-work");
       if (p === "rest") document.body.classList.add("phase-rest");
-      clockEl.textContent = String(Math.max(0, secs));
+      clockEl.textContent = fmt(secs);
       metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
     }
-
     function focusLabel() {
       const i = focusSel.value;
       if (i === "") return "";
-      const items = load();
-      const t = items[Number(i)];
+      const t = load()[Number(i)];
       return t ? ("Focus: " + t.text + " · ") : "";
     }
-
     function tick() {
       remaining -= 1;
-      clockEl.textContent = String(Math.max(0, remaining));
+      clockEl.textContent = fmt(remaining);
       metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
       if (remaining > 0) return;
-      const work = Number(document.getElementById("workSec").value) || 20;
-      const rest = Number(document.getElementById("restSec").value) || 10;
-      totalRounds = Number(document.getElementById("rounds").value) || 8;
+      const work = workSecs();
+      const rest = restSecs();
+      totalRounds = Math.max(1, Number(document.getElementById("rounds").value) || 4);
 
       if (phase === "prep") {
         round = 1;
@@ -391,24 +400,21 @@
         setPhase("work", work);
       }
     }
-
     function stopTimer(resetClock) {
       running = false;
       clearInterval(timer);
       timer = null;
       document.getElementById("startBtn").textContent = "Start";
       if (resetClock) {
-        const work = Number(document.getElementById("workSec").value) || 20;
         round = 0;
-        setPhase("ready", work);
+        setPhase("ready", workSecs());
       }
     }
-
     document.getElementById("startBtn").onclick = () => {
       if (running) return;
-      const work = Number(document.getElementById("workSec").value) || 20;
-      const prep = Number(document.getElementById("prepSec").value) || 0;
-      totalRounds = Number(document.getElementById("rounds").value) || 8;
+      const work = workSecs();
+      const prep = prepSecs();
+      totalRounds = Math.max(1, Number(document.getElementById("rounds").value) || 4);
       if (phase === "ready" || phase === "done") {
         round = 0;
         if (prep > 0) setPhase("prep", prep);
@@ -432,7 +438,7 @@
       localStorage.setItem(KEY, localStorage.getItem("todo-app-v1"));
     }
     render();
-    setPhase("ready", Number(document.getElementById("workSec").value) || 20);
+    setPhase("ready", workSecs());
   </script>
 </body>
 </html>
