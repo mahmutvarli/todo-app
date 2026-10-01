@@ -520,6 +520,12 @@
       fetchPrayerTimes();
     };
     document.getElementById("refreshPrayersBtn").onclick = fetchPrayerTimes;
+    document.getElementById("clearSalahBtn").onclick = () => {
+      const items = load().filter(it => it.kind !== "prayer");
+      save(items);
+      render();
+      statusEl.textContent = "Cleared salah todos. New ones appear only at athan.";
+    };
     document.getElementById("autoPrayerTodos").onchange = (e) => {
       const s = loadPrayerSettings();
       s.autoTodos = e.target.checked;
