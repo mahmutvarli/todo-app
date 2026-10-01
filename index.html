@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f172a" />
-  <title>Todo + Tabata</title>
+  <title>Todo + Tabata + Prayers</title>
   <style>
     :root {
       color-scheme: dark;
@@ -19,6 +19,7 @@
       --ok: #4ade80;
       --work: #f97316;
       --rest: #22d3ee;
+      --prayer: #a78bfa;
     }
     * { box-sizing: border-box; }
     body {
@@ -29,153 +30,89 @@
       color: var(--text);
       padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
     }
-    h1 { font-size: 1.35rem; margin: 0 0 12px; font-weight: 650; }
-    h2 { font-size: 1rem; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
-    .tabs {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
+    h1 { font-size: 1.25rem; margin: 0 0 12px; font-weight: 650; }
+    h2 { font-size: 0.95rem; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
+    .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
     .tabs button {
-      flex: 1;
-      border: 1px solid #334155;
-      background: var(--card);
-      color: var(--muted);
-      border-radius: 12px;
-      padding: 10px;
-      font-weight: 600;
-      font-size: 15px;
-      cursor: pointer;
+      flex: 1; border: 1px solid #334155; background: var(--card); color: var(--muted);
+      border-radius: 12px; padding: 10px 6px; font-weight: 600; font-size: 13px; cursor: pointer;
     }
-    .tabs button.active {
-      background: var(--accent);
-      color: #0f172a;
-      border-color: var(--accent);
-    }
+    .tabs button.active { background: var(--accent); color: #0f172a; border-color: var(--accent); }
     .panel { display: none; }
     .panel.active { display: block; }
     .row { display: flex; gap: 8px; margin-bottom: 16px; }
-    input[type="text"], input[type="number"] {
-      flex: 1;
-      border: 1px solid #334155;
-      background: var(--card);
-      color: var(--text);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 16px;
-      outline: none;
-      width: 100%;
+    input[type="text"], input[type="number"], select {
+      flex: 1; border: 1px solid #334155; background: var(--card); color: var(--text);
+      border-radius: 12px; padding: 12px 14px; font-size: 16px; outline: none; width: 100%;
     }
-    input:focus { border-color: var(--accent); }
+    input:focus, select:focus { border-color: var(--accent); }
     button.primary {
-      border: 0;
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 15px;
-      font-weight: 600;
-      background: var(--accent);
-      color: #0f172a;
-      cursor: pointer;
+      border: 0; border-radius: 12px; padding: 12px 14px; font-size: 15px; font-weight: 600;
+      background: var(--accent); color: #0f172a; cursor: pointer;
     }
-    button.ghost {
-      background: transparent;
-      border: 0;
-      color: var(--muted);
-      padding: 8px;
-      cursor: pointer;
-    }
+    button.ghost { background: transparent; border: 0; color: var(--muted); padding: 8px; cursor: pointer; }
     button.secondary {
-      border: 1px solid #334155;
-      background: var(--card);
-      color: var(--text);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
+      border: 1px solid #334155; background: var(--card); color: var(--text);
+      border-radius: 12px; padding: 12px 14px; font-size: 15px; font-weight: 600; cursor: pointer;
     }
     ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
     li {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: var(--card);
-      border-radius: 14px;
-      padding: 12px;
+      display: flex; align-items: center; gap: 10px; background: var(--card);
+      border-radius: 14px; padding: 12px;
     }
     li.done span { color: var(--muted); text-decoration: line-through; }
+    li.prayer-item { border-left: 3px solid var(--prayer); }
     li span { flex: 1; word-break: break-word; }
+    .sub { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
     .check {
-      width: 22px; height: 22px; border-radius: 999px;
-      border: 2px solid var(--muted); background: transparent; padding: 0; flex-shrink: 0; cursor: pointer;
+      width: 22px; height: 22px; border-radius: 999px; border: 2px solid var(--muted);
+      background: transparent; padding: 0; flex-shrink: 0; cursor: pointer;
     }
     li.done .check { border-color: var(--ok); background: var(--ok); }
     .del { color: var(--danger); font-size: 18px; line-height: 1; }
     .empty { color: var(--muted); text-align: center; padding: 32px 8px; display: block; }
-    .hint { color: var(--muted); font-size: 0.85rem; margin-top: 20px; text-align: center; }
-
-    .timer-card {
-      background: var(--card);
-      border-radius: 20px;
-      padding: 20px 16px 16px;
-      text-align: center;
+    .hint { color: var(--muted); font-size: 0.85rem; margin-top: 16px; text-align: center; }
+    .timer-card, .prayer-card {
+      background: var(--card); border-radius: 20px; padding: 20px 16px 16px; text-align: center;
     }
-    .phase {
-      font-size: 0.95rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-    }
+    .phase { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
     .phase.work { color: var(--work); }
     .phase.rest { color: var(--rest); }
     .phase.ready, .phase.done { color: var(--muted); }
-    .clock {
-      font-size: 3.4rem;
-      font-variant-numeric: tabular-nums;
-      font-weight: 700;
-      line-height: 1;
-      margin: 8px 0 12px;
-    }
+    .clock { font-size: 3.4rem; font-variant-numeric: tabular-nums; font-weight: 700; line-height: 1; margin: 8px 0 12px; }
     .meta { color: var(--muted); margin-bottom: 16px; font-size: 0.95rem; }
     .controls { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
     .controls button { min-width: 100px; }
-    .settings {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 16px;
-    }
+    .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
     .settings label {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      font-size: 0.8rem;
-      color: var(--muted);
-      text-align: left;
+      display: flex; flex-direction: column; gap: 6px; font-size: 0.8rem; color: var(--muted); text-align: left;
     }
-    .link-task {
-      margin-top: 16px;
-      text-align: left;
+    .link-task { margin-top: 16px; text-align: left; }
+    .prayer-list { text-align: left; margin-top: 12px; }
+    .prayer-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid #334155; font-size: 1rem;
     }
-    .link-task select {
-      width: 100%;
-      border: 1px solid #334155;
-      background: var(--card);
-      color: var(--text);
-      border-radius: 12px;
-      padding: 12px;
-      font-size: 15px;
+    .prayer-row:last-child { border-bottom: 0; }
+    .prayer-row .name { font-weight: 600; }
+    .prayer-row .time { font-variant-numeric: tabular-nums; color: var(--prayer); font-weight: 650; }
+    .prayer-row.next { background: #1e1b4b; margin: 0 -12px; padding: 10px 12px; border-radius: 10px; border: 0; }
+    .status { color: var(--muted); font-size: 0.85rem; margin: 8px 0 12px; min-height: 1.2em; }
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      text-align: left; margin-top: 14px; font-size: 0.9rem;
     }
+    .toggle-row input { width: auto; accent-color: var(--accent); }
     body.phase-work { background: #1a1209; }
     body.phase-rest { background: #0a1a1f; }
   </style>
 </head>
 <body>
-  <h1>Todo + Tabata</h1>
+  <h1>Todo + Tabata + Prayers</h1>
   <div class="tabs">
     <button type="button" id="tab-todo" class="active">Todos</button>
     <button type="button" id="tab-tabata">Tabata</button>
+    <button type="button" id="tab-prayers">Prayers</button>
   </div>
 
   <section id="panel-todo" class="panel active">
@@ -207,13 +144,47 @@
         <select id="focusTask"><option value="">— none —</option></select>
       </div>
     </div>
-    <p class="hint">Beeps on phase change when sound is allowed. Stay on this tab for accurate timing.</p>
+    <p class="hint">Beeps on phase change when sound is allowed.</p>
   </section>
 
-  <p class="hint">Saved on this device. Share → Add to Home Screen on iPhone.</p>
+  <section id="panel-prayers" class="panel">
+    <div class="prayer-card">
+      <h2 style="color:var(--text)">Today’s athan</h2>
+      <div id="prayerStatus" class="status">Finding your location…</div>
+      <div class="controls" style="margin-bottom:8px">
+        <button type="button" class="primary" id="locateBtn">Use my location</button>
+        <button type="button" class="secondary" id="refreshPrayersBtn">Refresh</button>
+      </div>
+      <div class="toggle-row">
+        <span>Auto-add prayer todos each day</span>
+        <input type="checkbox" id="autoPrayerTodos" checked />
+      </div>
+      <div class="toggle-row">
+        <span>Notify at athan (if browser allows)</span>
+        <input type="checkbox" id="athanNotify" />
+      </div>
+      <label style="display:block;text-align:left;margin-top:12px;font-size:0.8rem;color:var(--muted)">
+        Calculation method
+        <select id="prayerMethod" style="margin-top:6px">
+          <option value="13">Turkey (Diyanet)</option>
+          <option value="3">Muslim World League</option>
+          <option value="2">ISNA</option>
+          <option value="4">Umm al-Qura</option>
+          <option value="5">Egyptian</option>
+          <option value="1">Karachi</option>
+        </select>
+      </label>
+      <div id="prayerList" class="prayer-list"></div>
+    </div>
+    <p class="hint">Times from Aladhan API using your GPS. On iPhone, keep the site open or use Add to Home Screen; background alerts are limited by iOS.</p>
+  </section>
+
+  <p class="hint">Data stays on this device (except prayer times fetched from Aladhan).</p>
 
   <script>
-    const KEY = "todo-app-v2";
+    const KEY = "todo-app-v3";
+    const PRAYER_KEY = "todo-app-prayer-settings-v1";
+    const PRAYER_NAMES = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
     const listEl = document.getElementById("list");
     const form = document.getElementById("form");
     const input = document.getElementById("input");
@@ -225,19 +196,24 @@
     }
     function save(items) { localStorage.setItem(KEY, JSON.stringify(items)); }
 
+    function todayISO() {
+      const d = new Date();
+      return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+    }
+
+    function loadPrayerSettings() {
+      try {
+        return Object.assign({
+          lat: null, lon: null, method: "13",
+          autoTodos: true, notify: false,
+          lastDate: null, times: null, placeLabel: ""
+        }, JSON.parse(localStorage.getItem(PRAYER_KEY) || "{}"));
+      } catch { return { lat: null, lon: null, method: "13", autoTodos: true, notify: false, lastDate: null, times: null, placeLabel: "" }; }
+    }
+    function savePrayerSettings(s) { localStorage.setItem(PRAYER_KEY, JSON.stringify(s)); }
+
     function fillFocus() {
-      const items = load().filter(i => !i.done);
       const cur = focusSel.value;
-      focusSel.innerHTML = '<option value="">— none —</option>';
-      items.forEach((item, idx) => {
-        const all = load();
-        const realIdx = all.findIndex(x => x.text === item.text && !x.done && x === item);
-        const opt = document.createElement("option");
-        opt.value = String(all.indexOf(item));
-        opt.textContent = item.text;
-        focusSel.appendChild(opt);
-      });
-      // rebuild properly by index in full list
       focusSel.innerHTML = '<option value="">— none —</option>';
       load().forEach((item, i) => {
         if (item.done) return;
@@ -260,13 +236,19 @@
       items.forEach((item, i) => {
         const li = document.createElement("li");
         if (item.done) li.classList.add("done");
+        if (item.kind === "prayer") li.classList.add("prayer-item");
         const check = document.createElement("button");
         check.type = "button";
         check.className = "check";
-        check.setAttribute("aria-label", "Toggle done");
         check.onclick = () => { items[i].done = !items[i].done; save(items); render(); };
         const span = document.createElement("span");
         span.textContent = item.text;
+        if (item.kind === "prayer" && item.time) {
+          const sub = document.createElement("span");
+          sub.className = "sub";
+          sub.textContent = "Athan " + item.time;
+          span.appendChild(sub);
+        }
         const del = document.createElement("button");
         del.type = "button";
         del.className = "ghost del";
@@ -275,10 +257,9 @@
         const tabata = document.createElement("button");
         tabata.type = "button";
         tabata.className = "ghost";
-        tabata.title = "Run Tabata on this";
         tabata.textContent = "⏱";
         tabata.onclick = () => {
-          document.getElementById("tab-tabata").click();
+          showTab("tabata");
           fillFocus();
           focusSel.value = String(i);
         };
@@ -299,32 +280,24 @@
       render();
     };
 
-    // Tabs
-    const panels = { todo: document.getElementById("panel-todo"), tabata: document.getElementById("panel-tabata") };
-    document.getElementById("tab-todo").onclick = function () {
-      this.classList.add("active");
-      document.getElementById("tab-tabata").classList.remove("active");
-      panels.todo.classList.add("active");
-      panels.tabata.classList.remove("active");
-    };
-    document.getElementById("tab-tabata").onclick = function () {
-      this.classList.add("active");
-      document.getElementById("tab-todo").classList.remove("active");
-      panels.tabata.classList.add("active");
-      panels.todo.classList.remove("active");
-      fillFocus();
-    };
+    function showTab(name) {
+      ["todo", "tabata", "prayers"].forEach(n => {
+        document.getElementById("tab-" + n).classList.toggle("active", n === name);
+        document.getElementById("panel-" + n).classList.toggle("active", n === name);
+      });
+      document.body.classList.remove("phase-work", "phase-rest");
+      if (name === "tabata") fillFocus();
+      if (name === "prayers") syncPrayerUI();
+    }
+    document.getElementById("tab-todo").onclick = () => showTab("todo");
+    document.getElementById("tab-tabata").onclick = () => showTab("tabata");
+    document.getElementById("tab-prayers").onclick = () => showTab("prayers");
 
-    // Tabata engine (settings in minutes; clock shows m:ss)
+    // Tabata
     const phaseEl = document.getElementById("phase");
     const clockEl = document.getElementById("clock");
     const metaEl = document.getElementById("meta");
-    let timer = null;
-    let running = false;
-    let phase = "ready";
-    let remaining = 25 * 60;
-    let round = 0;
-    let totalRounds = 4;
+    let timer = null, running = false, phase = "ready", remaining = 25 * 60, round = 0, totalRounds = 4;
 
     function minsInput(id, fallback) {
       const n = Number(document.getElementById(id).value);
@@ -335,9 +308,7 @@
     function prepSecs() { return Math.max(0, minsInput("prepMin", 0)) * 60; }
     function fmt(secs) {
       const s = Math.max(0, Math.floor(secs));
-      const m = Math.floor(s / 60);
-      const r = s % 60;
-      return m + ":" + String(r).padStart(2, "0");
+      return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
     }
     function beep(high) {
       try {
@@ -373,47 +344,27 @@
       clockEl.textContent = fmt(remaining);
       metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
       if (remaining > 0) return;
-      const work = workSecs();
-      const rest = restSecs();
+      const work = workSecs(), rest = restSecs();
       totalRounds = Math.max(1, Number(document.getElementById("rounds").value) || 4);
-
-      if (phase === "prep") {
-        round = 1;
-        beep(true);
-        setPhase("work", work);
-        return;
-      }
+      if (phase === "prep") { round = 1; beep(true); setPhase("work", work); return; }
       if (phase === "work") {
-        if (round >= totalRounds) {
-          beep(true); beep(true);
-          setPhase("done", 0);
-          stopTimer(false);
-          return;
-        }
+        if (round >= totalRounds) { beep(true); beep(true); setPhase("done", 0); stopTimer(false); return; }
         if (rest > 0) { beep(false); setPhase("rest", rest); }
         else { round += 1; beep(true); setPhase("work", work); }
         return;
       }
-      if (phase === "rest") {
-        round += 1;
-        beep(true);
-        setPhase("work", work);
-      }
+      if (phase === "rest") { round += 1; beep(true); setPhase("work", work); }
     }
     function stopTimer(resetClock) {
       running = false;
       clearInterval(timer);
       timer = null;
       document.getElementById("startBtn").textContent = "Start";
-      if (resetClock) {
-        round = 0;
-        setPhase("ready", workSecs());
-      }
+      if (resetClock) { round = 0; setPhase("ready", workSecs()); }
     }
     document.getElementById("startBtn").onclick = () => {
       if (running) return;
-      const work = workSecs();
-      const prep = prepSecs();
+      const work = workSecs(), prep = prepSecs();
       totalRounds = Math.max(1, Number(document.getElementById("rounds").value) || 4);
       if (phase === "ready" || phase === "done") {
         round = 0;
@@ -426,19 +377,176 @@
     };
     document.getElementById("pauseBtn").onclick = () => {
       if (!running) return;
-      running = false;
-      clearInterval(timer);
-      timer = null;
+      running = false; clearInterval(timer); timer = null;
       document.getElementById("startBtn").textContent = "Resume";
     };
     document.getElementById("resetBtn").onclick = () => stopTimer(true);
 
-    // migrate old key
-    if (!localStorage.getItem(KEY) && localStorage.getItem("todo-app-v1")) {
-      localStorage.setItem(KEY, localStorage.getItem("todo-app-v1"));
+    // Prayers
+    const statusEl = document.getElementById("prayerStatus");
+    const prayerListEl = document.getElementById("prayerList");
+    let notified = new Set(JSON.parse(localStorage.getItem("todo-app-athan-notified") || "[]"));
+
+    function syncPrayerUI() {
+      const s = loadPrayerSettings();
+      document.getElementById("autoPrayerTodos").checked = !!s.autoTodos;
+      document.getElementById("athanNotify").checked = !!s.notify;
+      document.getElementById("prayerMethod").value = String(s.method || "13");
+      if (s.times && s.lastDate === todayISO()) renderPrayerTimes(s);
+      else if (s.lat != null) fetchPrayerTimes();
+      else statusEl.textContent = "Tap “Use my location” to load athan times.";
     }
+
+    function nextPrayerName(times) {
+      const now = new Date();
+      const mins = now.getHours() * 60 + now.getMinutes();
+      for (const name of PRAYER_NAMES) {
+        const [h, m] = times[name].split(":").map(Number);
+        if (h * 60 + m >= mins) return name;
+      }
+      return null;
+    }
+
+    function renderPrayerTimes(s) {
+      const times = s.times;
+      if (!times) return;
+      const next = nextPrayerName(times);
+      statusEl.textContent = (s.placeLabel || (s.lat.toFixed(2) + ", " + s.lon.toFixed(2))) +
+        " · " + (s.lastDate || todayISO()) + " · method " + s.method;
+      prayerListEl.innerHTML = PRAYER_NAMES.map(name => {
+        const cls = name === next ? "prayer-row next" : "prayer-row";
+        const tag = name === next ? " · next" : "";
+        return '<div class="' + cls + '"><span class="name">' + name + tag + '</span><span class="time">' + times[name] + '</span></div>';
+      }).join("");
+    }
+
+    function upsertPrayerTodos(times, date) {
+      const s = loadPrayerSettings();
+      if (!s.autoTodos) return;
+      let items = load();
+      items = items.filter(it => !(it.kind === "prayer" && it.date === date));
+      const block = PRAYER_NAMES.map(name => ({
+        text: "Salah · " + name,
+        done: false,
+        kind: "prayer",
+        prayer: name,
+        time: times[name],
+        date
+      }));
+      // insert prayers near top but keep newest manual todos first: put prayers after non-prayer undones? Keep simple: prepend prayers for today
+      items = block.concat(items);
+      save(items);
+      render();
+    }
+
+    async function fetchPrayerTimes() {
+      const s = loadPrayerSettings();
+      if (s.lat == null || s.lon == null) {
+        statusEl.textContent = "Location needed.";
+        return;
+      }
+      statusEl.textContent = "Loading prayer times…";
+      const method = document.getElementById("prayerMethod").value || s.method || "13";
+      const url = "https://api.aladhan.com/v1/timings?latitude=" + s.lat +
+        "&longitude=" + s.lon + "&method=" + method;
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data || data.code !== 200) throw new Error("API error");
+        const t = data.data.timings;
+        const times = {};
+        PRAYER_NAMES.forEach(n => { times[n] = (t[n] || "").split(" ")[0]; });
+        const meta = data.data.meta || {};
+        s.method = method;
+        s.times = times;
+        s.lastDate = todayISO();
+        s.placeLabel = meta.timezone || "";
+        savePrayerSettings(s);
+        renderPrayerTimes(s);
+        upsertPrayerTodos(times, s.lastDate);
+      } catch (e) {
+        statusEl.textContent = "Could not load times. Check network and try Refresh.";
+      }
+    }
+
+    function locate() {
+      statusEl.textContent = "Asking for location…";
+      if (!navigator.geolocation) {
+        statusEl.textContent = "Geolocation not supported on this browser.";
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(pos => {
+        const s = loadPrayerSettings();
+        s.lat = pos.coords.latitude;
+        s.lon = pos.coords.longitude;
+        savePrayerSettings(s);
+        fetchPrayerTimes();
+      }, err => {
+        statusEl.textContent = "Location denied or failed (" + err.code + "). Allow location for this site.";
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 600000 });
+    }
+
+    document.getElementById("locateBtn").onclick = locate;
+    document.getElementById("refreshPrayersBtn").onclick = fetchPrayerTimes;
+    document.getElementById("autoPrayerTodos").onchange = (e) => {
+      const s = loadPrayerSettings();
+      s.autoTodos = e.target.checked;
+      savePrayerSettings(s);
+      if (s.autoTodos && s.times) upsertPrayerTodos(s.times, todayISO());
+    };
+    document.getElementById("athanNotify").onchange = async (e) => {
+      const s = loadPrayerSettings();
+      s.notify = e.target.checked;
+      savePrayerSettings(s);
+      if (s.notify && Notification && Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+    };
+    document.getElementById("prayerMethod").onchange = (e) => {
+      const s = loadPrayerSettings();
+      s.method = e.target.value;
+      savePrayerSettings(s);
+      fetchPrayerTimes();
+    };
+
+    function checkAthanNotify() {
+      const s = loadPrayerSettings();
+      if (!s.notify || !s.times || s.lastDate !== todayISO()) return;
+      if (!window.Notification || Notification.permission !== "granted") return;
+      const now = new Date();
+      const hhmm = String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
+      for (const name of PRAYER_NAMES) {
+        const key = s.lastDate + "|" + name;
+        if (s.times[name] === hhmm && !notified.has(key)) {
+          notified.add(key);
+          localStorage.setItem("todo-app-athan-notified", JSON.stringify([...notified]));
+          try { new Notification("Athan · " + name, { body: "It's time for " + name + " (" + hhmm + ")" }); } catch (_) {}
+          beep(true);
+        }
+      }
+    }
+
+    // migrate
+    if (!localStorage.getItem(KEY)) {
+      const old = localStorage.getItem("todo-app-v2") || localStorage.getItem("todo-app-v1");
+      if (old) localStorage.setItem(KEY, old);
+    }
+
     render();
     setPhase("ready", workSecs());
+    syncPrayerUI();
+    // auto-refresh times daily / on load if location known
+    (function bootPrayers() {
+      const s = loadPrayerSettings();
+      if (s.lat != null) {
+        if (s.lastDate !== todayISO() || !s.times) fetchPrayerTimes();
+        else {
+          renderPrayerTimes(s);
+          if (s.autoTodos) upsertPrayerTodos(s.times, todayISO());
+        }
+      }
+    })();
+    setInterval(checkAthanNotify, 15000);
   </script>
 </body>
 </html>
