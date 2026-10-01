@@ -105,6 +105,20 @@
     .toggle-row input { width: auto; accent-color: var(--accent); }
     body.phase-work { background: #1a1209; }
     body.phase-rest { background: #0a1a1f; }
+
+    .arch-day { margin-bottom: 14px; }
+    .arch-day h3 { font-size: 0.9rem; color: var(--muted); margin: 0 0 8px; }
+    .arch-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 12px; border-radius: 12px; margin-bottom: 6px;
+      background: #0f172a; border-left: 4px solid var(--muted);
+    }
+    .arch-item.on-time { border-left-color: var(--ok); }
+    .arch-item.late { border-left-color: #fb923c; }
+    .arch-item.missed { border-left-color: var(--danger); }
+    .arch-item .label { font-weight: 600; }
+    .arch-item .meta { font-size: 0.75rem; color: var(--muted); }
+
   </style>
 </head>
 <body>
@@ -114,6 +128,7 @@
     <button type="button" id="tab-tabata">Tabata</button>
     <button type="button" id="tab-prayers">Prayers</button>
     <button type="button" id="tab-ledger">Ledger</button>
+    <button type="button" id="tab-archive">Archive</button>
   </div>
 
   <section id="panel-todo" class="panel active">
@@ -217,6 +232,23 @@
     <p class="hint">This is a personal tracker, not a fatwa. Default puberty age is editable; set the exact accountability date if you know it.</p>
   </section>
 
+
+  <section id="panel-archive" class="panel">
+    <div class="prayer-card" style="text-align:left">
+      <h2 style="color:var(--text)">Archive</h2>
+      <p class="status" id="archiveHint">Completed salah, grouped by due date.</p>
+      <div class="legend" style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.8rem;margin:8px 0 12px;color:var(--muted)">
+        <span style="color:var(--ok)">● On time</span>
+        <span style="color:#fb923c">● Made up / late</span>
+        <span style="color:var(--danger)">● Missed</span>
+      </div>
+      <div id="archiveList"></div>
+      <div class="controls" style="margin-top:12px;justify-content:flex-start">
+        <button type="button" class="secondary" id="clearArchiveBtn">Clear archive</button>
+      </div>
+    </div>
+  </section>
+
   <p class="hint">Data stays on this device (except prayer times fetched from Aladhan).</p>
 
   <script>
@@ -288,8 +320,19 @@
             if (!was && items[i].done) L.onTime = (L.onTime|0) + r;
             if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - r);
             saveLedger(L);
-            // checked off → remember + remove from list
+            // checked off → archive + remember + remove from list
             if (!was && items[i].done) {
+              const st = completionStatus(items[i].prayer, items[i].time, new Date().toISOString());
+              archivePrayer(items[i], st);
+              if (st === "late") {
+                // late completion: count as makeup rakats not on-time
+                const FARZ = { Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 };
+                const r = FARZ[items[i].prayer] || 0;
+                const L2 = loadLedger();
+                L2.onTime = Math.max(0, (L2.onTime|0) - r);
+                L2.makeup = (L2.makeup|0) + r;
+                saveLedger(L2);
+              }
               const doneKey = "todo-app-prayer-done-v1";
               let doneMap = {};
               try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
@@ -342,7 +385,7 @@
     };
 
     function showTab(name) {
-      ["todo", "tabata", "prayers", "ledger"].forEach(n => {
+      ["todo", "tabata", "prayers", "ledger", "archive"].forEach(n => {
         document.getElementById("tab-" + n).classList.toggle("active", n === name);
         document.getElementById("panel-" + n).classList.toggle("active", n === name);
       });
@@ -350,11 +393,13 @@
       if (name === "tabata") fillFocus();
       if (name === "prayers") syncPrayerUI();
       if (name === "ledger") syncLedgerUI();
+      if (name === "archive") renderArchive();
     }
     document.getElementById("tab-todo").onclick = () => showTab("todo");
     document.getElementById("tab-tabata").onclick = () => showTab("tabata");
     document.getElementById("tab-prayers").onclick = () => showTab("prayers");
     document.getElementById("tab-ledger").onclick = () => showTab("ledger");
+    document.getElementById("tab-archive").onclick = () => showTab("archive");
 
     // Tabata
     const phaseEl = document.getElementById("phase");
@@ -748,6 +793,82 @@
 
     // Patch todo check: prayer checked → onTime +1; unchecked → onTime -1
     const _oldRender = null;
+
+
+    const ARCHIVE_KEY = "todo-app-archive-v1";
+    function loadArchive() {
+      try { return JSON.parse(localStorage.getItem(ARCHIVE_KEY)) || []; }
+      catch { return []; }
+    }
+    function saveArchive(rows) { localStorage.setItem(ARCHIVE_KEY, JSON.stringify(rows)); }
+
+    /** on-time if completed at or before next athan (or end of day for Isha). */
+    function completionStatus(prayer, athanTime, completedAt) {
+      const s = loadPrayerSettings();
+      const times = (s.times && s.lastDate === todayISO()) ? s.times : null;
+      const done = completedAt ? new Date(completedAt) : new Date();
+      const doneMins = done.getHours() * 60 + done.getMinutes();
+      const athan = toMins(athanTime);
+      let nextEnd = 24 * 60;
+      if (times) {
+        const idx = PRAYER_NAMES.indexOf(prayer);
+        if (idx >= 0 && idx < PRAYER_NAMES.length - 1) {
+          nextEnd = toMins(times[PRAYER_NAMES[idx + 1]]);
+        }
+      }
+      if (doneMins >= athan && doneMins < nextEnd) return "on-time";
+      if (doneMins >= nextEnd || (doneMins < athan && prayer !== "Fajr")) return "late";
+      return "on-time";
+    }
+
+    function archivePrayer(item, status) {
+      const rows = loadArchive();
+      rows.unshift({
+        id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+        prayer: item.prayer,
+        text: item.text,
+        time: item.time,
+        date: item.date || todayISO(),
+        completedAt: new Date().toISOString(),
+        status: status || "on-time",
+        rakats: ({ Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 })[item.prayer] || 0
+      });
+      saveArchive(rows);
+    }
+
+    function renderArchive() {
+      const rows = loadArchive();
+      const el = document.getElementById("archiveList");
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No archived salah yet</p>';
+        document.getElementById("archiveHint").textContent = "Completed salah will appear here.";
+        return;
+      }
+      const byDate = {};
+      rows.forEach(r => {
+        byDate[r.date] = byDate[r.date] || [];
+        byDate[r.date].push(r);
+      });
+      const dates = Object.keys(byDate).sort().reverse();
+      el.innerHTML = dates.map(d => {
+        const items = byDate[d].map(r => {
+          const cls = r.status === "on-time" ? "on-time" : (r.status === "missed" ? "missed" : "late");
+          const when = r.completedAt ? new Date(r.completedAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
+          return '<div class="arch-item ' + cls + '"><div><div class="label">' + (r.text || ("Salah · " + r.prayer)) +
+            '</div><div class="meta">Athan ' + (r.time||"") + (when ? " · done " + when : "") +
+            " · " + (r.rakats||"") + " rakats</div></div><div class="meta">' + cls.replace("-", " ") + "</div></div>";
+        }).join("");
+        return '<div class="arch-day"><h3>' + d + "</h3>" + items + "</div>";
+      }).join("");
+      document.getElementById("archiveHint").textContent = rows.length + " archived · grouped by due date";
+    }
+
+    document.getElementById("clearArchiveBtn").onclick = () => {
+      if (!confirm("Clear entire archive?")) return;
+      saveArchive([]);
+      renderArchive();
+    };
+
 
     // migrate
     if (!localStorage.getItem(KEY)) {
