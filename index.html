@@ -153,6 +153,7 @@
       <div id="prayerStatus" class="status">Finding your location…</div>
       <div class="controls" style="margin-bottom:8px">
         <button type="button" class="primary" id="locateBtn">Use my location</button>
+        <button type="button" class="secondary" id="istanbulBtn">Use Istanbul</button>
         <button type="button" class="secondary" id="refreshPrayersBtn">Refresh</button>
       </div>
       <div class="toggle-row">
@@ -487,6 +488,14 @@
     }
 
     document.getElementById("locateBtn").onclick = locate;
+    document.getElementById("istanbulBtn").onclick = () => {
+      const s = loadPrayerSettings();
+      s.lat = 41.0082;
+      s.lon = 28.9784;
+      s.placeLabel = "Istanbul";
+      savePrayerSettings(s);
+      fetchPrayerTimes();
+    };
     document.getElementById("refreshPrayersBtn").onclick = fetchPrayerTimes;
     document.getElementById("autoPrayerTodos").onchange = (e) => {
       const s = loadPrayerSettings();
