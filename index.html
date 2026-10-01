@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0f172a" />
-  <title>Todo</title>
+  <title>Todo + Tabata</title>
   <style>
     :root {
       color-scheme: dark;
@@ -17,6 +17,8 @@
       --accent: #38bdf8;
       --danger: #f87171;
       --ok: #4ade80;
+      --work: #f97316;
+      --rest: #22d3ee;
     }
     * { box-sizing: border-box; }
     body {
@@ -27,13 +29,33 @@
       color: var(--text);
       padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
     }
-    h1 { font-size: 1.4rem; margin: 0 0 16px; font-weight: 650; }
-    .row {
+    h1 { font-size: 1.35rem; margin: 0 0 12px; font-weight: 650; }
+    h2 { font-size: 1rem; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
+    .tabs {
       display: flex;
       gap: 8px;
       margin-bottom: 16px;
     }
-    input[type="text"] {
+    .tabs button {
+      flex: 1;
+      border: 1px solid #334155;
+      background: var(--card);
+      color: var(--muted);
+      border-radius: 12px;
+      padding: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .tabs button.active {
+      background: var(--accent);
+      color: #0f172a;
+      border-color: var(--accent);
+    }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type="text"], input[type="number"] {
       flex: 1;
       border: 1px solid #334155;
       background: var(--card);
@@ -42,9 +64,10 @@
       padding: 12px 14px;
       font-size: 16px;
       outline: none;
+      width: 100%;
     }
-    input[type="text"]:focus { border-color: var(--accent); }
-    button {
+    input:focus { border-color: var(--accent); }
+    button.primary {
       border: 0;
       border-radius: 12px;
       padding: 12px 14px;
@@ -56,71 +79,182 @@
     }
     button.ghost {
       background: transparent;
+      border: 0;
       color: var(--muted);
       padding: 8px;
+      cursor: pointer;
     }
-    ul {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+    button.secondary {
+      border: 1px solid #334155;
+      background: var(--card);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
     }
+    ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
     li {
       display: flex;
       align-items: center;
       gap: 10px;
       background: var(--card);
       border-radius: 14px;
-      padding: 12px 12px 12px 14px;
+      padding: 12px;
     }
     li.done span { color: var(--muted); text-decoration: line-through; }
     li span { flex: 1; word-break: break-word; }
     .check {
-      width: 22px;
-      height: 22px;
-      border-radius: 999px;
-      border: 2px solid var(--muted);
-      background: transparent;
-      padding: 0;
-      flex-shrink: 0;
+      width: 22px; height: 22px; border-radius: 999px;
+      border: 2px solid var(--muted); background: transparent; padding: 0; flex-shrink: 0; cursor: pointer;
     }
-    li.done .check {
-      border-color: var(--ok);
-      background: var(--ok);
-    }
+    li.done .check { border-color: var(--ok); background: var(--ok); }
     .del { color: var(--danger); font-size: 18px; line-height: 1; }
-    .empty { color: var(--muted); text-align: center; padding: 32px 8px; }
+    .empty { color: var(--muted); text-align: center; padding: 32px 8px; display: block; }
     .hint { color: var(--muted); font-size: 0.85rem; margin-top: 20px; text-align: center; }
+
+    .timer-card {
+      background: var(--card);
+      border-radius: 20px;
+      padding: 20px 16px 16px;
+      text-align: center;
+    }
+    .phase {
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .phase.work { color: var(--work); }
+    .phase.rest { color: var(--rest); }
+    .phase.ready, .phase.done { color: var(--muted); }
+    .clock {
+      font-size: 4.2rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      line-height: 1;
+      margin: 8px 0 12px;
+    }
+    .meta { color: var(--muted); margin-bottom: 16px; font-size: 0.95rem; }
+    .controls { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .controls button { min-width: 100px; }
+    .settings {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .settings label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: left;
+    }
+    .link-task {
+      margin-top: 16px;
+      text-align: left;
+    }
+    .link-task select {
+      width: 100%;
+      border: 1px solid #334155;
+      background: var(--card);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 15px;
+    }
+    body.phase-work { background: #1a1209; }
+    body.phase-rest { background: #0a1a1f; }
   </style>
 </head>
 <body>
-  <h1>Todo</h1>
-  <form class="row" id="form">
-    <input id="input" type="text" placeholder="Add a task" autocomplete="off" enterkeyhint="done" />
-    <button type="submit">Add</button>
-  </form>
-  <ul id="list"></ul>
-  <p class="hint">Saved on this device. On iPhone: Share → Add to Home Screen.</p>
+  <h1>Todo + Tabata</h1>
+  <div class="tabs">
+    <button type="button" id="tab-todo" class="active">Todos</button>
+    <button type="button" id="tab-tabata">Tabata</button>
+  </div>
+
+  <section id="panel-todo" class="panel active">
+    <form class="row" id="form">
+      <input id="input" type="text" placeholder="Add a task" autocomplete="off" enterkeyhint="done" />
+      <button class="primary" type="submit">Add</button>
+    </form>
+    <ul id="list"></ul>
+  </section>
+
+  <section id="panel-tabata" class="panel">
+    <div class="timer-card">
+      <div id="phase" class="phase ready">Ready</div>
+      <div id="clock" class="clock">20</div>
+      <div id="meta" class="meta">Round 0 / 8</div>
+      <div class="controls">
+        <button type="button" class="primary" id="startBtn">Start</button>
+        <button type="button" class="secondary" id="pauseBtn">Pause</button>
+        <button type="button" class="secondary" id="resetBtn">Reset</button>
+      </div>
+      <div class="settings">
+        <label>Work (sec)<input id="workSec" type="number" min="5" max="300" value="20" /></label>
+        <label>Rest (sec)<input id="restSec" type="number" min="0" max="300" value="10" /></label>
+        <label>Rounds<input id="rounds" type="number" min="1" max="40" value="8" /></label>
+        <label>Prep (sec)<input id="prepSec" type="number" min="0" max="60" value="3" /></label>
+      </div>
+      <div class="link-task">
+        <h2>Focus task (optional)</h2>
+        <select id="focusTask"><option value="">— none —</option></select>
+      </div>
+    </div>
+    <p class="hint">Beeps on phase change when sound is allowed. Stay on this tab for accurate timing.</p>
+  </section>
+
+  <p class="hint">Saved on this device. Share → Add to Home Screen on iPhone.</p>
+
   <script>
-    const KEY = "todo-app-v1";
+    const KEY = "todo-app-v2";
     const listEl = document.getElementById("list");
     const form = document.getElementById("form");
     const input = document.getElementById("input");
+    const focusSel = document.getElementById("focusTask");
 
     function load() {
       try { return JSON.parse(localStorage.getItem(KEY)) || []; }
       catch { return []; }
     }
-    function save(items) {
-      localStorage.setItem(KEY, JSON.stringify(items));
+    function save(items) { localStorage.setItem(KEY, JSON.stringify(items)); }
+
+    function fillFocus() {
+      const items = load().filter(i => !i.done);
+      const cur = focusSel.value;
+      focusSel.innerHTML = '<option value="">— none —</option>';
+      items.forEach((item, idx) => {
+        const all = load();
+        const realIdx = all.findIndex(x => x.text === item.text && !x.done && x === item);
+        const opt = document.createElement("option");
+        opt.value = String(all.indexOf(item));
+        opt.textContent = item.text;
+        focusSel.appendChild(opt);
+      });
+      // rebuild properly by index in full list
+      focusSel.innerHTML = '<option value="">— none —</option>';
+      load().forEach((item, i) => {
+        if (item.done) return;
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = item.text;
+        focusSel.appendChild(opt);
+      });
+      if ([...focusSel.options].some(o => o.value === cur)) focusSel.value = cur;
     }
+
     function render() {
       const items = load();
       listEl.innerHTML = "";
       if (!items.length) {
-        listEl.innerHTML = '<li class="empty" style="display:block">No tasks yet</li>';
+        listEl.innerHTML = '<li class="empty">No tasks yet</li>';
+        fillFocus();
         return;
       }
       items.forEach((item, i) => {
@@ -130,27 +264,30 @@
         check.type = "button";
         check.className = "check";
         check.setAttribute("aria-label", "Toggle done");
-        check.onclick = () => {
-          items[i].done = !items[i].done;
-          save(items);
-          render();
-        };
+        check.onclick = () => { items[i].done = !items[i].done; save(items); render(); };
         const span = document.createElement("span");
         span.textContent = item.text;
         const del = document.createElement("button");
         del.type = "button";
         del.className = "ghost del";
-        del.setAttribute("aria-label", "Delete");
         del.textContent = "×";
-        del.onclick = () => {
-          items.splice(i, 1);
-          save(items);
-          render();
+        del.onclick = () => { items.splice(i, 1); save(items); render(); };
+        const tabata = document.createElement("button");
+        tabata.type = "button";
+        tabata.className = "ghost";
+        tabata.title = "Run Tabata on this";
+        tabata.textContent = "⏱";
+        tabata.onclick = () => {
+          document.getElementById("tab-tabata").click();
+          fillFocus();
+          focusSel.value = String(i);
         };
-        li.append(check, span, del);
+        li.append(check, span, tabata, del);
         listEl.appendChild(li);
       });
+      fillFocus();
     }
+
     form.onsubmit = (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -161,7 +298,141 @@
       input.value = "";
       render();
     };
+
+    // Tabs
+    const panels = { todo: document.getElementById("panel-todo"), tabata: document.getElementById("panel-tabata") };
+    document.getElementById("tab-todo").onclick = function () {
+      this.classList.add("active");
+      document.getElementById("tab-tabata").classList.remove("active");
+      panels.todo.classList.add("active");
+      panels.tabata.classList.remove("active");
+    };
+    document.getElementById("tab-tabata").onclick = function () {
+      this.classList.add("active");
+      document.getElementById("tab-todo").classList.remove("active");
+      panels.tabata.classList.add("active");
+      panels.todo.classList.remove("active");
+      fillFocus();
+    };
+
+    // Tabata engine
+    const phaseEl = document.getElementById("phase");
+    const clockEl = document.getElementById("clock");
+    const metaEl = document.getElementById("meta");
+    let timer = null;
+    let running = false;
+    let phase = "ready"; // ready | prep | work | rest | done
+    let remaining = 20;
+    let round = 0;
+    let totalRounds = 8;
+
+    function beep(high) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = high ? 880 : 440;
+        g.gain.value = 0.08;
+        o.start();
+        setTimeout(() => { o.stop(); ctx.close(); }, high ? 180 : 120);
+      } catch (_) {}
+    }
+
+    function setPhase(p, secs) {
+      phase = p;
+      remaining = secs;
+      phaseEl.className = "phase " + (p === "prep" ? "ready" : p);
+      phaseEl.textContent = p === "prep" ? "Get ready" : p === "work" ? "Work" : p === "rest" ? "Rest" : p === "done" ? "Done" : "Ready";
+      document.body.classList.remove("phase-work", "phase-rest");
+      if (p === "work") document.body.classList.add("phase-work");
+      if (p === "rest") document.body.classList.add("phase-rest");
+      clockEl.textContent = String(Math.max(0, secs));
+      metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
+    }
+
+    function focusLabel() {
+      const i = focusSel.value;
+      if (i === "") return "";
+      const items = load();
+      const t = items[Number(i)];
+      return t ? ("Focus: " + t.text + " · ") : "";
+    }
+
+    function tick() {
+      remaining -= 1;
+      clockEl.textContent = String(Math.max(0, remaining));
+      metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
+      if (remaining > 0) return;
+      const work = Number(document.getElementById("workSec").value) || 20;
+      const rest = Number(document.getElementById("restSec").value) || 10;
+      totalRounds = Number(document.getElementById("rounds").value) || 8;
+
+      if (phase === "prep") {
+        round = 1;
+        beep(true);
+        setPhase("work", work);
+        return;
+      }
+      if (phase === "work") {
+        if (round >= totalRounds) {
+          beep(true); beep(true);
+          setPhase("done", 0);
+          stopTimer(false);
+          return;
+        }
+        if (rest > 0) { beep(false); setPhase("rest", rest); }
+        else { round += 1; beep(true); setPhase("work", work); }
+        return;
+      }
+      if (phase === "rest") {
+        round += 1;
+        beep(true);
+        setPhase("work", work);
+      }
+    }
+
+    function stopTimer(resetClock) {
+      running = false;
+      clearInterval(timer);
+      timer = null;
+      document.getElementById("startBtn").textContent = "Start";
+      if (resetClock) {
+        const work = Number(document.getElementById("workSec").value) || 20;
+        round = 0;
+        setPhase("ready", work);
+      }
+    }
+
+    document.getElementById("startBtn").onclick = () => {
+      if (running) return;
+      const work = Number(document.getElementById("workSec").value) || 20;
+      const prep = Number(document.getElementById("prepSec").value) || 0;
+      totalRounds = Number(document.getElementById("rounds").value) || 8;
+      if (phase === "ready" || phase === "done") {
+        round = 0;
+        if (prep > 0) setPhase("prep", prep);
+        else { round = 1; setPhase("work", work); beep(true); }
+      }
+      running = true;
+      document.getElementById("startBtn").textContent = "Running…";
+      timer = setInterval(tick, 1000);
+    };
+    document.getElementById("pauseBtn").onclick = () => {
+      if (!running) return;
+      running = false;
+      clearInterval(timer);
+      timer = null;
+      document.getElementById("startBtn").textContent = "Resume";
+    };
+    document.getElementById("resetBtn").onclick = () => stopTimer(true);
+
+    // migrate old key
+    if (!localStorage.getItem(KEY) && localStorage.getItem("todo-app-v1")) {
+      localStorage.setItem(KEY, localStorage.getItem("todo-app-v1"));
+    }
     render();
+    setPhase("ready", Number(document.getElementById("workSec").value) || 20);
   </script>
 </body>
 </html>
