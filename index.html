@@ -159,7 +159,7 @@
         <button type="button" class="secondary" id="clearSalahBtn">Clear salah todos</button>
       </div>
       <div class="toggle-row">
-        <span>Add each salah todo at athan time</span>
+        <span>Show only current salah on Todos</span>
         <input type="checkbox" id="autoPrayerTodos" checked />
       </div>
       <div class="toggle-row">
@@ -492,24 +492,49 @@
       return true;
     }
 
-    /** Add a salah todo only in the minute of its athan (no dumping the whole day). */
+    function toMins(hhmm) {
+      const [h, m] = (hhmm || "0:0").split(":").map(Number);
+      return (h || 0) * 60 + (m || 0);
+    }
+
+    /** Current farz window: from this athan until the next (Isha until midnight+Fajr). */
+    function currentPrayerName(times) {
+      if (!times) return null;
+      const now = new Date();
+      const mins = now.getHours() * 60 + now.getMinutes();
+      let current = null;
+      for (const name of PRAYER_NAMES) {
+        if (mins >= toMins(times[name])) current = name;
+      }
+      return current; // null before Fajr
+    }
+
+    /** Keep only the current salah on the todo list (remove other auto prayer todos). */
     function releaseDuePrayerTodos() {
       const s = loadPrayerSettings();
       if (!s.autoTodos || !s.times || s.lastDate !== todayISO()) return;
-      const now = new Date();
-      const hhmm = String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
       const date = s.lastDate;
-      let added = false;
-      for (const name of PRAYER_NAMES) {
-        if (s.times[name] === hhmm) {
-          if (addPrayerTodoNow(name, s.times[name], date)) added = true;
+      const current = currentPrayerName(s.times);
+      let items = load();
+      // drop auto prayers that are not the current window (keep manual todos)
+      items = items.filter(it => !(it.kind === "prayer" && (it.prayer !== current || it.date !== date)));
+      if (current) {
+        if (!prayerTodoExists(items, date, current)) {
+          items.unshift({
+            text: "Salah · " + current,
+            done: false,
+            kind: "prayer",
+            prayer: current,
+            time: s.times[current],
+            date: date
+          });
         }
       }
-      return added;
+      save(items);
+      render();
     }
 
     function upsertPrayerTodos(times, date) {
-      // kept name for callers: schedule by releasing due only
       releaseDuePrayerTodos();
     }
 
