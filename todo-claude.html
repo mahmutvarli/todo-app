@@ -13,6 +13,7 @@
       --line: #e4e7eb;
       --accent: #4f46e5;
       --danger: #e11d48;
+      --rest: #059669;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -23,6 +24,7 @@
         --line: #2a2e37;
         --accent: #818cf8;
         --danger: #fb7185;
+        --rest: #34d399;
       }
     }
     * { box-sizing: border-box; }
@@ -122,12 +124,75 @@
     footer button { color: var(--muted); }
     footer button:hover { color: var(--danger); }
     footer button[hidden] { display: none; }
+    .timer {
+      --phase: var(--accent);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+      display: grid;
+      gap: 10px;
+    }
+    .timer.rest { --phase: var(--rest); }
+    .timer-top { display: flex; justify-content: space-between; gap: 8px; font-size: 0.85rem; color: var(--muted); }
+    .phase { color: var(--phase); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+    .clock {
+      font-size: 3.2rem;
+      font-weight: 700;
+      line-height: 1;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      color: var(--phase);
+    }
+    .focus { text-align: center; color: var(--muted); font-size: 0.95rem; min-height: 1.4em; word-break: break-word; }
+    .focus strong { color: var(--text); }
+    .bar { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+    .bar div { height: 100%; width: 0; background: var(--phase); transition: width 0.25s linear; }
+    .controls { display: flex; gap: 8px; }
+    .controls button { flex: 1; padding: 10px; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
+    .controls .add { background: var(--phase); box-shadow: none; }
+    .settings { display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: center; color: var(--muted); font-size: 0.9rem; }
+    .settings input {
+      width: 3.6em;
+      padding: 4px 6px;
+      font: inherit;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      text-align: center;
+    }
+    .play { color: var(--muted); padding: 4px 6px; border-radius: 6px; font-size: 0.9rem; }
+    .play:hover, li.focused .play { color: var(--accent); }
+    li.focused { box-shadow: inset 3px 0 0 var(--accent); }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   </style>
 </head>
 <body>
   <main>
     <h1>Todo List</h1>
-    <p class="sub">Double-click a task to edit it.</p>
+    <p class="sub">Double-click a task to edit it. Tap ▶ on a task to focus on it with the timer.</p>
+
+    <section class="timer" id="timer" aria-label="Tabata timer">
+      <div class="timer-top">
+        <span class="phase" id="phase">Ready</span>
+        <span id="round"></span>
+      </div>
+      <div class="clock" id="clock" role="timer">20:00</div>
+      <div class="focus" id="focus"></div>
+      <div class="bar"><div id="bar"></div></div>
+      <div class="controls">
+        <button type="button" class="add" id="start">Start</button>
+        <button type="button" id="skip">Skip</button>
+        <button type="button" id="reset">Reset</button>
+      </div>
+      <div class="settings">
+        <label>Work <input id="work" type="number" min="1" max="180" inputmode="numeric" /> min</label>
+        <label>Rest <input id="rest" type="number" min="1" max="60" inputmode="numeric" /> min</label>
+        <label>Rounds <input id="rounds" type="number" min="1" max="20" inputmode="numeric" /></label>
+      </div>
+    </section>
 
     <form id="form">
       <input id="input" type="text" placeholder="What needs doing?" autocomplete="off" aria-label="New task" />
@@ -206,13 +271,22 @@
         del.setAttribute("aria-label", "Delete task");
         del.onclick = () => { todos = todos.filter((x) => x !== t); update(); };
 
-        li.append(box, text, del);
+        const play = document.createElement("button");
+        play.type = "button";
+        play.className = "play";
+        play.textContent = "▶";
+        play.setAttribute("aria-label", "Focus on this task");
+        play.onclick = () => { focusId = focusId === t.id ? null : t.id; saveTimer(); render(); };
+        li.classList.toggle("focused", t.id === focusId);
+
+        li.append(box, text, play, del);
         list.append(li);
       }
 
       const left = todos.filter((t) => !t.done).length;
       $("count").textContent = `${left} ${left === 1 ? "task" : "tasks"} left`;
       $("clear").hidden = !todos.some((t) => t.done);
+      renderTimer();
     }
 
     function startEdit(li, text, t) {
@@ -261,6 +335,155 @@
     });
 
     $("clear").onclick = () => { todos = todos.filter((t) => !t.done); update(); };
+
+    // Tabata timer: work and rest intervals in minutes, repeated for N rounds.
+    const TKEY = "todo-claude-timer-v1";
+    const saved = (() => {
+      try { return JSON.parse(localStorage.getItem(TKEY)) || {}; }
+      catch { return {}; }
+    })();
+    const settings = { work: 20, rest: 10, rounds: 4, ...saved.settings };
+    let focusId = saved.focusId ?? null;
+    let phase = "idle"; // idle | work | rest | done
+    let round = 1;
+    let running = false;
+    let endsAt = 0;
+    let remaining = settings.work * 60000;
+    let audio = null;
+    let wakeLock = null;
+
+    function saveTimer() {
+      try { localStorage.setItem(TKEY, JSON.stringify({ settings, focusId })); } catch {}
+    }
+
+    const lengthOf = (p) => (p === "rest" ? settings.rest : settings.work) * 60000;
+
+    function beep(times) {
+      if (!audio) return;
+      for (let i = 0; i < times; i++) {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        const t = audio.currentTime + i * 0.25;
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.25, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(t);
+        osc.stop(t + 0.2);
+      }
+    }
+
+    // Move to the next phase, starting it at time `at`.
+    function advance(at) {
+      if (phase === "work" && round >= settings.rounds) {
+        phase = "done";
+        running = false;
+        remaining = 0;
+        releaseWakeLock();
+        beep(3);
+        return;
+      }
+      if (phase === "work") phase = "rest";
+      else { phase = "work"; round++; }
+      endsAt = at + lengthOf(phase);
+      remaining = endsAt - at;
+      beep(phase === "work" ? 2 : 1);
+    }
+
+    async function requestWakeLock() {
+      try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+    }
+    function releaseWakeLock() {
+      try { wakeLock?.release(); } catch {}
+      wakeLock = null;
+    }
+
+    function renderTimer() {
+      const timer = $("timer");
+      timer.classList.toggle("rest", phase === "rest");
+      const labels = { idle: "Ready", work: "Work", rest: "Rest", done: "Done" };
+      $("phase").textContent = labels[phase] + (phase !== "idle" && phase !== "done" && !running ? " · paused" : "");
+      $("round").textContent = phase === "done" ? `${settings.rounds} rounds complete` : `Round ${round} of ${settings.rounds}`;
+
+      const left = running ? Math.max(0, endsAt - Date.now()) : remaining;
+      const secs = Math.ceil(left / 1000);
+      $("clock").textContent = `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
+      const total = phase === "idle" || phase === "done" ? 1 : lengthOf(phase);
+      $("bar").style.width = phase === "done" ? "100%" : `${((total - left) / total) * 100}%`;
+
+      $("start").textContent = running ? "Pause" : phase === "idle" || phase === "done" ? "Start" : "Resume";
+      $("skip").disabled = phase === "idle" || phase === "done";
+
+      const task = todos.find((t) => t.id === focusId);
+      const focus = $("focus");
+      focus.textContent = "";
+      if (task) {
+        focus.append(phase === "rest" ? "Up next: " : "Focus: ");
+        const b = document.createElement("strong");
+        b.textContent = task.text;
+        focus.append(b);
+      } else {
+        focus.textContent = "Tap ▶ on a task to focus on it.";
+      }
+    }
+
+    $("start").onclick = () => {
+      try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch {}
+      if (running) {
+        remaining = endsAt - Date.now();
+        running = false;
+        releaseWakeLock();
+      } else {
+        if (phase === "idle" || phase === "done") {
+          phase = "work";
+          round = 1;
+          remaining = lengthOf("work");
+        }
+        endsAt = Date.now() + remaining;
+        running = true;
+        requestWakeLock();
+      }
+      renderTimer();
+    };
+
+    $("skip").onclick = () => {
+      const now = Date.now();
+      advance(now);
+      if (!running && phase !== "done") remaining = lengthOf(phase);
+      renderTimer();
+    };
+
+    $("reset").onclick = () => {
+      phase = "idle";
+      round = 1;
+      running = false;
+      remaining = lengthOf("work");
+      releaseWakeLock();
+      renderTimer();
+    };
+
+    for (const [id, max] of [["work", 180], ["rest", 60], ["rounds", 20]]) {
+      const field = $(id);
+      field.value = settings[id];
+      field.onchange = () => {
+        const n = Math.round(Number(field.value));
+        settings[id] = Math.min(max, Math.max(1, Number.isFinite(n) ? n : settings[id]));
+        field.value = settings[id];
+        if (phase === "idle") remaining = lengthOf("work");
+        saveTimer();
+        renderTimer();
+      };
+    }
+
+    // Timestamps keep time correct even if the phone sleeps; catch up on wake.
+    setInterval(() => {
+      if (!running) return;
+      while (running && Date.now() >= endsAt) advance(endsAt);
+      renderTimer();
+    }, 250);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && running) requestWakeLock();
+    });
 
     render();
   </script>
