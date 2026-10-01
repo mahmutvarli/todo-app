@@ -186,7 +186,7 @@
   <section id="panel-ledger" class="panel">
     <div class="prayer-card" style="text-align:left">
       <h2 style="color:var(--text)">Salah ledger</h2>
-      <p class="status" id="ledgerHint">Enter birthday and when you became accountable (bulugh). Counts 5 prayers/day from that date.</p>
+      <p class="status" id="ledgerHint">Enter birthday and accountability start. Counts farz rakats/day (Fajr 2, Dhuhr 4, Asr 4, Maghrib 3, Isha 4 = 17).</p>
       <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Birthday
         <input id="bday" type="date" style="margin-top:6px" />
       </label>
@@ -201,12 +201,12 @@
       </div>
       <div id="ledgerStats" style="margin-top:16px;display:none">
         <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
-        <div class="prayer-row"><span class="name">Prayers owed (5×days)</span><span class="time" id="statOwed">0</span></div>
-        <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">On time (green)</span><span class="time" id="statGreen" style="color:var(--ok)">0</span></div>
-        <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made up (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
-        <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
-        <p class="hint" style="text-align:left">Mark today’s salah on Todos (check = on time). Below, log make-ups for the past.</p>
-        <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up prayers (count)
+        <div class="prayer-row"><span class="name">Farz rakats owed (17×days)</span><span class="time" id="statOwed">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">On time rakats (green)</span><span class="time" id="statGreen" style="color:var(--ok)">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made-up rakats (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed rakats (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
+        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count.</p>
+        <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up farz rakats
           <div class="row" style="margin-top:6px;margin-bottom:0">
             <input id="makeupCount" type="number" min="1" max="50000" value="1" />
             <button type="button" class="secondary" id="addMakeupBtn">Log make-up</button>
@@ -282,9 +282,11 @@
           const was = items[i].done;
           items[i].done = !was;
           if (items[i].kind === "prayer") {
+            const FARZ = { Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 };
+            const r = FARZ[items[i].prayer] || 0;
             const L = loadLedger();
-            if (!was && items[i].done) L.onTime = (L.onTime|0) + 1;
-            if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - 1);
+            if (!was && items[i].done) L.onTime = (L.onTime|0) + r;
+            if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - r);
             saveLedger(L);
           }
           save(items); render();
@@ -653,7 +655,8 @@
       const today = new Date();
       if (start > today) return { days: 0, owed: 0, green: L.onTime|0, orange: L.makeup|0, red: 0 };
       const days = daysBetween(start, today);
-      const owed = days * 5;
+      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
+      const owed = days * RAKATS_PER_DAY;
       const green = Math.max(0, L.onTime|0);
       const orange = Math.max(0, L.makeup|0);
       const red = Math.max(0, owed - green - orange);
@@ -674,8 +677,8 @@
       document.getElementById("statOrange").textContent = String(c.orange);
       document.getElementById("statRed").textContent = String(c.red);
       document.getElementById("ledgerHint").textContent =
-        c.red === 0 ? "Ledger balanced (green + orange cover all owed)." :
-        (c.red + " prayers still marked missed / owed (red).");
+        c.red === 0 ? "Ledger balanced — green + orange cover all owed rakats." :
+        (c.red + " farz rakats still missed / owed (red).");
     }
     document.getElementById("saveLedgerBtn").onclick = () => {
       const L = loadLedger();
