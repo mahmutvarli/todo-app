@@ -288,8 +288,17 @@
             if (!was && items[i].done) L.onTime = (L.onTime|0) + r;
             if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - r);
             saveLedger(L);
-            // checked off → remove from list (as requested)
-            if (!was && items[i].done) items.splice(i, 1);
+            // checked off → remember + remove from list
+            if (!was && items[i].done) {
+              const doneKey = "todo-app-prayer-done-v1";
+              let doneMap = {};
+              try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
+              const d = items[i].date || todayISO();
+              doneMap[d] = doneMap[d] || [];
+              if (items[i].prayer && !doneMap[d].includes(items[i].prayer)) doneMap[d].push(items[i].prayer);
+              localStorage.setItem(doneKey, JSON.stringify(doneMap));
+              items.splice(i, 1);
+            }
           }
           save(items); render();
         };
@@ -526,7 +535,11 @@
       // remove completed prayer todos (checked off = gone)
       const before = items.length;
       items = items.filter(it => !(it.kind === "prayer" && it.done));
-      if (current && !prayerTodoExists(items, date, current)) {
+      const doneKey = "todo-app-prayer-done-v1";
+      let doneMap = {};
+      try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
+      const doneToday = new Set(doneMap[date] || []);
+      if (current && !prayerTodoExists(items, date, current) && !doneToday.has(current)) {
         items.unshift({
           text: "Salah · " + current,
           done: false,
