@@ -441,18 +441,16 @@
       return true;
     }
 
-    /** Only add a salah todo once its athan time is reached (not the whole day upfront). */
+    /** Add a salah todo only in the minute of its athan (no dumping the whole day). */
     function releaseDuePrayerTodos() {
       const s = loadPrayerSettings();
       if (!s.autoTodos || !s.times || s.lastDate !== todayISO()) return;
       const now = new Date();
-      const mins = now.getHours() * 60 + now.getMinutes();
+      const hhmm = String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
       const date = s.lastDate;
       let added = false;
       for (const name of PRAYER_NAMES) {
-        const [h, m] = (s.times[name] || "99:99").split(":").map(Number);
-        if (!Number.isFinite(h)) continue;
-        if (mins >= h * 60 + m) {
+        if (s.times[name] === hhmm) {
           if (addPrayerTodoNow(name, s.times[name], date)) added = true;
         }
       }
