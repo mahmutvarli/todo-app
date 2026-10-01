@@ -113,6 +113,7 @@
     <button type="button" id="tab-todo" class="active">Todos</button>
     <button type="button" id="tab-tabata">Tabata</button>
     <button type="button" id="tab-prayers">Prayers</button>
+    <button type="button" id="tab-ledger">Ledger</button>
   </div>
 
   <section id="panel-todo" class="panel active">
@@ -181,6 +182,41 @@
     <p class="hint">Times from Aladhan API using your GPS. On iPhone, keep the site open or use Add to Home Screen; background alerts are limited by iOS.</p>
   </section>
 
+
+  <section id="panel-ledger" class="panel">
+    <div class="prayer-card" style="text-align:left">
+      <h2 style="color:var(--text)">Salah ledger</h2>
+      <p class="status" id="ledgerHint">Enter birthday and when you became accountable (bulugh). Counts 5 prayers/day from that date.</p>
+      <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Birthday
+        <input id="bday" type="date" style="margin-top:6px" />
+      </label>
+      <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Puberty / accountability start
+        <input id="puberty" type="date" style="margin-top:6px" />
+      </label>
+      <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Or age at puberty (years)
+        <input id="pubertyAge" type="number" min="9" max="18" step="1" value="15" style="margin-top:6px" />
+      </label>
+      <div class="controls" style="margin-top:14px;justify-content:flex-start">
+        <button type="button" class="primary" id="saveLedgerBtn">Save &amp; calculate</button>
+      </div>
+      <div id="ledgerStats" style="margin-top:16px;display:none">
+        <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
+        <div class="prayer-row"><span class="name">Prayers owed (5×days)</span><span class="time" id="statOwed">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">On time (green)</span><span class="time" id="statGreen" style="color:var(--ok)">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made up (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
+        <p class="hint" style="text-align:left">Mark today’s salah on Todos (check = on time). Below, log make-ups for the past.</p>
+        <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up prayers (count)
+          <div class="row" style="margin-top:6px;margin-bottom:0">
+            <input id="makeupCount" type="number" min="1" max="50000" value="1" />
+            <button type="button" class="secondary" id="addMakeupBtn">Log make-up</button>
+          </div>
+        </label>
+      </div>
+    </div>
+    <p class="hint">This is a personal tracker, not a fatwa. Default puberty age is editable; set the exact accountability date if you know it.</p>
+  </section>
+
   <p class="hint">Data stays on this device (except prayer times fetched from Aladhan).</p>
 
   <script>
@@ -242,7 +278,17 @@
         const check = document.createElement("button");
         check.type = "button";
         check.className = "check";
-        check.onclick = () => { items[i].done = !items[i].done; save(items); render(); };
+        check.onclick = () => {
+          const was = items[i].done;
+          items[i].done = !was;
+          if (items[i].kind === "prayer") {
+            const L = loadLedger();
+            if (!was && items[i].done) L.onTime = (L.onTime|0) + 1;
+            if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - 1);
+            saveLedger(L);
+          }
+          save(items); render();
+        };
         const span = document.createElement("span");
         span.textContent = item.text;
         if (item.kind === "prayer" && item.time) {
@@ -283,17 +329,19 @@
     };
 
     function showTab(name) {
-      ["todo", "tabata", "prayers"].forEach(n => {
+      ["todo", "tabata", "prayers", "ledger"].forEach(n => {
         document.getElementById("tab-" + n).classList.toggle("active", n === name);
         document.getElementById("panel-" + n).classList.toggle("active", n === name);
       });
       document.body.classList.remove("phase-work", "phase-rest");
       if (name === "tabata") fillFocus();
       if (name === "prayers") syncPrayerUI();
+      if (name === "ledger") syncLedgerUI();
     }
     document.getElementById("tab-todo").onclick = () => showTab("todo");
     document.getElementById("tab-tabata").onclick = () => showTab("tabata");
     document.getElementById("tab-prayers").onclick = () => showTab("prayers");
+    document.getElementById("tab-ledger").onclick = () => showTab("ledger");
 
     // Tabata
     const phaseEl = document.getElementById("phase");
@@ -563,6 +611,94 @@
         }
       }
     }
+
+
+    // Salah ledger (birthday → owed count)
+    const LEDGER_KEY = "todo-app-ledger-v1";
+    function loadLedger() {
+      try {
+        return Object.assign({
+          bday: "", puberty: "", pubertyAge: 15,
+          onTime: 0, makeup: 0
+        }, JSON.parse(localStorage.getItem(LEDGER_KEY) || "{}"));
+      } catch {
+        return { bday: "", puberty: "", pubertyAge: 15, onTime: 0, makeup: 0 };
+      }
+    }
+    function saveLedger(L) { localStorage.setItem(LEDGER_KEY, JSON.stringify(L)); }
+
+    function parseYMD(s) {
+      if (!s) return null;
+      const [y,m,d] = s.split("-").map(Number);
+      if (!y) return null;
+      return new Date(y, m - 1, d);
+    }
+    function daysBetween(a, b) {
+      const ms = 24 * 60 * 60 * 1000;
+      const a0 = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+      const b0 = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+      return Math.max(0, Math.floor((b0 - a0) / ms) + 1);
+    }
+    function accountabilityStart(L) {
+      const pub = parseYMD(L.puberty);
+      if (pub) return pub;
+      const bd = parseYMD(L.bday);
+      if (!bd) return null;
+      const age = Number(L.pubertyAge) || 15;
+      return new Date(bd.getFullYear() + age, bd.getMonth(), bd.getDate());
+    }
+    function ledgerCounts(L) {
+      const start = accountabilityStart(L);
+      if (!start) return null;
+      const today = new Date();
+      if (start > today) return { days: 0, owed: 0, green: L.onTime|0, orange: L.makeup|0, red: 0 };
+      const days = daysBetween(start, today);
+      const owed = days * 5;
+      const green = Math.max(0, L.onTime|0);
+      const orange = Math.max(0, L.makeup|0);
+      const red = Math.max(0, owed - green - orange);
+      return { days, owed, green, orange, red };
+    }
+    function syncLedgerUI() {
+      const L = loadLedger();
+      document.getElementById("bday").value = L.bday || "";
+      document.getElementById("puberty").value = L.puberty || "";
+      document.getElementById("pubertyAge").value = L.pubertyAge || 15;
+      const c = ledgerCounts(L);
+      const box = document.getElementById("ledgerStats");
+      if (!c) { box.style.display = "none"; return; }
+      box.style.display = "block";
+      document.getElementById("statDays").textContent = String(c.days);
+      document.getElementById("statOwed").textContent = String(c.owed);
+      document.getElementById("statGreen").textContent = String(c.green);
+      document.getElementById("statOrange").textContent = String(c.orange);
+      document.getElementById("statRed").textContent = String(c.red);
+      document.getElementById("ledgerHint").textContent =
+        c.red === 0 ? "Ledger balanced (green + orange cover all owed)." :
+        (c.red + " prayers still marked missed / owed (red).");
+    }
+    document.getElementById("saveLedgerBtn").onclick = () => {
+      const L = loadLedger();
+      L.bday = document.getElementById("bday").value;
+      L.puberty = document.getElementById("puberty").value;
+      L.pubertyAge = Number(document.getElementById("pubertyAge").value) || 15;
+      if (!L.bday && !L.puberty) {
+        document.getElementById("ledgerHint").textContent = "Enter birthday or an accountability start date.";
+        return;
+      }
+      saveLedger(L);
+      syncLedgerUI();
+    };
+    document.getElementById("addMakeupBtn").onclick = () => {
+      const L = loadLedger();
+      const n = Math.max(1, Number(document.getElementById("makeupCount").value) || 1);
+      L.makeup = (L.makeup|0) + n;
+      saveLedger(L);
+      syncLedgerUI();
+    };
+
+    // Patch todo check: prayer checked → onTime +1; unchecked → onTime -1
+    const _oldRender = null;
 
     // migrate
     if (!localStorage.getItem(KEY)) {
