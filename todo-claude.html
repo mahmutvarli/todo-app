@@ -14,6 +14,8 @@
       --accent: #4f46e5;
       --danger: #e11d48;
       --rest: #059669;
+      --prayer: #b45309;
+      --prayer-bg: #fef3c7;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -25,6 +27,8 @@
         --accent: #818cf8;
         --danger: #fb7185;
         --rest: #34d399;
+        --prayer: #fbbf24;
+        --prayer-bg: #3a2e14;
       }
     }
     * { box-sizing: border-box; }
@@ -104,6 +108,65 @@
     li .text { flex: 1; word-break: break-word; cursor: text; }
     li.done .text { color: var(--muted); text-decoration: line-through; }
     li .edit { flex: 1; padding: 6px 8px; }
+    .pill {
+      flex-shrink: 0;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: var(--prayer);
+      background: var(--prayer-bg);
+      font-variant-numeric: tabular-nums;
+    }
+    .prayers {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .prayer-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .prayer-head strong { color: var(--prayer); }
+    .prayer-head span { color: var(--muted); font-size: 0.85rem; }
+    .times { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .times div {
+      display: grid;
+      gap: 2px;
+      text-align: center;
+      padding: 6px 4px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .times b { font-size: 1rem; color: var(--text); font-variant-numeric: tabular-nums; }
+    .times .next { background: var(--prayer-bg); color: var(--prayer); }
+    .times .next b { color: var(--prayer); }
+    .times .past b { color: var(--muted); font-weight: 500; }
+    .banner {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--prayer-bg);
+      color: var(--prayer);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+    .psettings { display: grid; gap: 8px; margin-top: 10px; font-size: 0.9rem; color: var(--muted); }
+    .psettings label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .psettings select, .psettings input[type="number"] {
+      font: inherit;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 6px;
+      max-width: 100%;
+    }
+    .psettings input[type="number"] { width: 7em; }
+    .psettings .locate { justify-self: start; padding: 6px 12px; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); color: var(--text); }
+    .psettings .note { margin: 0; font-size: 0.8rem; }
     .del {
       color: var(--muted);
       font-size: 1.2rem;
@@ -173,6 +236,27 @@
   <main>
     <h1>Todo List</h1>
     <p class="sub">Double-click a task to edit it. Tap ▶ on a task to focus on it with the timer.</p>
+
+    <section class="prayers" id="prayers" aria-label="Prayer times">
+      <div class="prayer-head">
+        <strong id="pnext">Prayer times</strong>
+        <span id="pwhere"></span>
+      </div>
+      <div class="banner" id="pbanner" role="status" hidden></div>
+      <div class="times" id="ptimes"></div>
+      <details id="pdetails">
+        <summary>Prayer settings</summary>
+        <div class="psettings">
+          <label><input type="checkbox" id="penabled" /> Add each prayer to my list at its athan time</label>
+          <button type="button" class="locate" id="plocate">Use my location</button>
+          <label>City <select id="pcity"></select></label>
+          <label>Lat <input type="number" id="plat" step="0.0001" /> Lng <input type="number" id="plng" step="0.0001" /></label>
+          <label>Method <select id="pmethod"></select></label>
+          <label>Asr <select id="pasr"><option value="1">Standard (Shafi'i, Maliki, Hanbali)</option><option value="2">Hanafi</option></select></label>
+          <p class="note" id="pnote">Times are calculated on this device and shown in its time zone.</p>
+        </div>
+      </details>
+    </section>
 
     <section class="timer" id="timer" aria-label="Tabata timer">
       <div class="timer-top">
@@ -279,7 +363,16 @@
         play.onclick = () => { focusId = focusId === t.id ? null : t.id; saveTimer(); render(); };
         li.classList.toggle("focused", t.id === focusId);
 
-        li.append(box, text, play, del);
+        li.append(box, text);
+        if (t.prayer) {
+          const pill = document.createElement("span");
+          pill.className = "pill";
+          pill.textContent = t.prayer.date === todayKey()
+            ? clock(t.prayer.at)
+            : `missed · ${new Date(t.prayer.at).toLocaleDateString([], { weekday: "short" })}`;
+          li.append(pill);
+        }
+        li.append(play, del);
         list.append(li);
       }
 
@@ -485,7 +578,271 @@
       if (document.visibilityState === "visible" && running) requestWakeLock();
     });
 
+    // Prayer times, calculated on-device (PrayTimes-style astronomy).
+    const PKEY = "todo-claude-prayer-v1";
+    const PRAYERS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+    const SLOTS = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
+    const METHODS = {
+      Turkey: { name: "Diyanet (Turkey)", fajr: 18, isha: 17, adj: { Sunrise: -7, Dhuhr: 5, Asr: 4, Maghrib: 7 } },
+      MWL: { name: "Muslim World League", fajr: 18, isha: 17 },
+      ISNA: { name: "ISNA (North America)", fajr: 15, isha: 15 },
+      Egypt: { name: "Egyptian General Authority", fajr: 19.5, isha: 17.5 },
+      Makkah: { name: "Umm al-Qura, Makkah", fajr: 18.5, ishaMinutes: 90 },
+      Karachi: { name: "University of Islamic Sciences, Karachi", fajr: 18, isha: 18 },
+    };
+    const CITIES = [
+      ["Istanbul", 41.0082, 28.9784, "Europe/Istanbul"], ["Ankara", 39.9334, 32.8597], ["Izmir", 38.4237, 27.1428],
+      ["Mecca", 21.4225, 39.8262], ["Medina", 24.4686, 39.6142], ["Riyadh", 24.7136, 46.6753, "Asia/Riyadh"],
+      ["Dubai", 25.2048, 55.2708, "Asia/Dubai"], ["Doha", 25.2854, 51.531, "Asia/Qatar"], ["Cairo", 30.0444, 31.2357, "Africa/Cairo"],
+      ["Amman", 31.9454, 35.9284, "Asia/Amman"], ["Jerusalem", 31.7683, 35.2137, "Asia/Jerusalem"], ["Baghdad", 33.3152, 44.3661, "Asia/Baghdad"],
+      ["Tehran", 35.6892, 51.389, "Asia/Tehran"], ["Baku", 40.4093, 49.8671, "Asia/Baku"], ["Karachi", 24.8607, 67.0011, "Asia/Karachi"],
+      ["Lahore", 31.5204, 74.3587], ["Dhaka", 23.8103, 90.4125, "Asia/Dhaka"], ["Jakarta", -6.2088, 106.8456, "Asia/Jakarta"],
+      ["Kuala Lumpur", 3.139, 101.6869, "Asia/Kuala_Lumpur"], ["Casablanca", 33.5731, -7.5898, "Africa/Casablanca"],
+      ["Algiers", 36.7538, 3.0588, "Africa/Algiers"], ["Tunis", 36.8065, 10.1815, "Africa/Tunis"], ["Lagos", 6.5244, 3.3792, "Africa/Lagos"],
+      ["London", 51.5074, -0.1278, "Europe/London"], ["Paris", 48.8566, 2.3522, "Europe/Paris"], ["Brussels", 50.8503, 4.3517, "Europe/Brussels"],
+      ["Amsterdam", 52.3676, 4.9041, "Europe/Amsterdam"], ["Berlin", 52.52, 13.405, "Europe/Berlin"], ["Vienna", 48.2082, 16.3738, "Europe/Vienna"],
+      ["Stockholm", 59.3293, 18.0686, "Europe/Stockholm"], ["New York", 40.7128, -74.006, "America/New_York"],
+      ["Chicago", 41.8781, -87.6298, "America/Chicago"], ["Houston", 29.7604, -95.3698], ["Los Angeles", 34.0522, -118.2437, "America/Los_Angeles"],
+      ["Toronto", 43.6532, -79.3832, "America/Toronto"], ["Sydney", -33.8688, 151.2093, "Australia/Sydney"],
+    ];
+
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const guessCity = CITIES.find((c) => c[3] === tz);
+    const guessMethod = tz === "Europe/Istanbul" ? "Turkey" : tz === "Asia/Riyadh" ? "Makkah"
+      : tz === "Africa/Cairo" ? "Egypt" : tz === "Asia/Karachi" ? "Karachi" : tz.startsWith("America/") ? "ISNA" : "MWL";
+
+    const pset = (() => {
+      try { return JSON.parse(localStorage.getItem(PKEY)) || {}; }
+      catch { return {}; }
+    })();
+    pset.enabled ??= true;
+    pset.method ??= guessMethod;
+    pset.asr ??= 1;
+    pset.loc ??= guessCity ? { name: guessCity[0], lat: guessCity[1], lng: guessCity[2] } : null;
+    pset.added ??= {};
+
+    function savePrayer() {
+      try { localStorage.setItem(PKEY, JSON.stringify(pset)); } catch {}
+    }
+
+    const pad = (n) => String(n).padStart(2, "0");
+    function todayKey(d = new Date()) {
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+    const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    const rad = (d) => (d * Math.PI) / 180;
+    const deg = (r) => (r * 180) / Math.PI;
+    const dsin = (d) => Math.sin(rad(d));
+    const dcos = (d) => Math.cos(rad(d));
+    const fix = (a, b) => ((a % b) + b) % b;
+
+    function julian(y, m, d) {
+      if (m <= 2) { y -= 1; m += 12; }
+      const A = Math.floor(y / 100);
+      const B = 2 - A + Math.floor(A / 4);
+      return Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + d + B - 1524.5;
+    }
+
+    function sunPosition(jd) {
+      const D = jd - 2451545.0;
+      const g = fix(357.529 + 0.98560028 * D, 360);
+      const q = fix(280.459 + 0.98564736 * D, 360);
+      const L = fix(q + 1.915 * dsin(g) + 0.02 * dsin(2 * g), 360);
+      const e = 23.439 - 0.00000036 * D;
+      const RA = deg(Math.atan2(dcos(e) * dsin(L), dcos(L))) / 15;
+      return { decl: deg(Math.asin(dsin(e) * dsin(L))), eqt: q / 15 - fix(RA, 24) };
+    }
+
+    // Returns epoch ms for each slot on the given local calendar date.
+    function prayerTimes(date, lat, lng, methodKey, asrFactor) {
+      const m = METHODS[methodKey] || METHODS.MWL;
+      const y = date.getFullYear(), mo = date.getMonth() + 1, d = date.getDate();
+      const jd = julian(y, mo, d) - lng / (15 * 24);
+      const midDay = (t) => fix(12 - sunPosition(jd + t).eqt, 24);
+      const angleTime = (angle, t, ccw) => {
+        const { decl } = sunPosition(jd + t);
+        const v = (-dsin(angle) - dsin(decl) * dsin(lat)) / (dcos(decl) * dcos(lat));
+        const T = deg(Math.acos(v)) / 15;
+        return midDay(t) + (ccw ? -T : T);
+      };
+      const asrTime = (t) => {
+        const { decl } = sunPosition(jd + t);
+        const angle = -deg(Math.atan(1 / (asrFactor + Math.tan(rad(Math.abs(lat - decl))))));
+        return angleTime(angle, t);
+      };
+
+      let h = { Fajr: 5, Sunrise: 6, Dhuhr: 12, Asr: 13, Maghrib: 18, Isha: 18 };
+      for (let i = 0; i < 2; i++) {
+        const t = (k) => (Number.isFinite(h[k]) ? h[k] : 12) / 24;
+        h = {
+          Fajr: angleTime(m.fajr, t("Fajr"), true),
+          Sunrise: angleTime(0.833, t("Sunrise"), true),
+          Dhuhr: midDay(t("Dhuhr")),
+          Asr: asrTime(t("Asr")),
+          Maghrib: angleTime(0.833, t("Maghrib")),
+          Isha: m.ishaMinutes ? 0 : angleTime(m.isha, t("Isha")),
+        };
+      }
+      if (m.ishaMinutes) h.Isha = h.Maghrib + m.ishaMinutes / 60;
+
+      // High latitudes: cap twilight at a fraction of the night (angle-based rule).
+      const night = 24 + h.Sunrise - h.Maghrib;
+      const fajrMax = (m.fajr / 60) * night;
+      if (!Number.isFinite(h.Fajr) || h.Sunrise - h.Fajr > fajrMax) h.Fajr = h.Sunrise - fajrMax;
+      if (!m.ishaMinutes) {
+        const ishaMax = (m.isha / 60) * night;
+        if (!Number.isFinite(h.Isha) || h.Isha - h.Maghrib > ishaMax) h.Isha = h.Maghrib + ishaMax;
+      }
+
+      const base = Date.UTC(y, mo - 1, d);
+      const out = {};
+      for (const k of SLOTS) {
+        const utcHours = h[k] - lng / 15 + ((m.adj && m.adj[k]) || 0) / 60;
+        out[k] = Math.round((base + utcHours * 3600000) / 60000) * 60000;
+      }
+      return out;
+    }
+
+    function todaysTimes() {
+      return pset.loc ? prayerTimes(new Date(), pset.loc.lat, pset.loc.lng, pset.method, Number(pset.asr)) : null;
+    }
+
+    function prayerTick() {
+      const times = todaysTimes();
+      const key = todayKey();
+      let changed = false;
+      let alertName = null;
+
+      // Done prayers from earlier days are cleared; missed ones stay until you tick them.
+      const before = todos.length;
+      todos = todos.filter((t) => !(t.prayer && t.prayer.date !== key && t.done));
+      if (todos.length !== before) changed = true;
+
+      if (pset.enabled && times) {
+        const added = pset.added[key] || [];
+        pset.added = { [key]: added };
+        const now = Date.now();
+        for (const name of PRAYERS) {
+          if (now < times[name] || added.includes(name)) continue;
+          added.push(name);
+          todos.unshift({ id: Date.now() + Math.random(), text: name, done: false, prayer: { date: key, at: times[name] } });
+          changed = true;
+          if (now - times[name] < 10 * 60000) alertName = name;
+        }
+        if (changed) savePrayer();
+      }
+
+      if (changed) update();
+      if (alertName) {
+        const banner = $("pbanner");
+        banner.textContent = `It's time for ${alertName}. Tap to dismiss.`;
+        banner.hidden = false;
+        beep(3);
+      }
+      renderPrayer(times);
+    }
+
+    function renderPrayer(times = todaysTimes()) {
+      $("pwhere").textContent = pset.loc ? `${pset.loc.name} · ${METHODS[pset.method].name}` : "";
+      const grid = $("ptimes");
+      grid.innerHTML = "";
+      if (!times) {
+        $("pnext").textContent = "Choose your city to see prayer times";
+        $("pdetails").open = true;
+        return;
+      }
+      const now = Date.now();
+      const next = PRAYERS.find((k) => times[k] > now);
+      if (next) {
+        const mins = Math.ceil((times[next] - now) / 60000);
+        const wait = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+        $("pnext").textContent = `${next} in ${wait}`;
+      } else {
+        $("pnext").textContent = "All prayers for today have started";
+      }
+      for (const k of SLOTS) {
+        const cell = document.createElement("div");
+        if (k === next) cell.className = "next";
+        else if (times[k] <= now) cell.className = "past";
+        const b = document.createElement("b");
+        b.textContent = clock(times[k]);
+        cell.append(k, b);
+        grid.append(cell);
+      }
+    }
+
+    function fillPrayerSettings() {
+      $("penabled").checked = pset.enabled;
+      $("pmethod").value = pset.method;
+      $("pasr").value = String(pset.asr);
+      const match = pset.loc && CITIES.find((c) => c[0] === pset.loc.name);
+      $("pcity").value = match ? match[0] : pset.loc ? "custom" : "";
+      $("plat").value = pset.loc ? pset.loc.lat : "";
+      $("plng").value = pset.loc ? pset.loc.lng : "";
+    }
+
+    function setLocation(loc) {
+      pset.loc = loc;
+      // Re-add from the new location's times only for prayers not yet added today.
+      savePrayer();
+      fillPrayerSettings();
+      prayerTick();
+    }
+
+    $("pcity").innerHTML = '<option value="">Choose a city…</option>'
+      + CITIES.map((c) => `<option value="${c[0]}">${c[0]}</option>`).join("")
+      + '<option value="custom">Custom location</option>';
+    $("pmethod").innerHTML = Object.entries(METHODS).map(([k, m]) => `<option value="${k}">${m.name}</option>`).join("");
+
+    $("pcity").onchange = (e) => {
+      const c = CITIES.find((x) => x[0] === e.target.value);
+      if (c) setLocation({ name: c[0], lat: c[1], lng: c[2] });
+    };
+    for (const id of ["plat", "plng"]) {
+      $(id).onchange = () => {
+        const lat = Number($("plat").value), lng = Number($("plng").value);
+        if ($("plat").value !== "" && $("plng").value !== "" && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+          setLocation({ name: "Custom location", lat, lng });
+        }
+      };
+    }
+    $("pmethod").onchange = (e) => { pset.method = e.target.value; savePrayer(); prayerTick(); };
+    $("pasr").onchange = (e) => { pset.asr = Number(e.target.value); savePrayer(); prayerTick(); };
+    $("penabled").onchange = (e) => { pset.enabled = e.target.checked; savePrayer(); prayerTick(); };
+    $("pbanner").onclick = () => { $("pbanner").hidden = true; };
+    $("plocate").onclick = () => {
+      const note = $("pnote");
+      if (!navigator.geolocation) {
+        note.textContent = "Location isn't available in this browser. Pick a city instead.";
+        return;
+      }
+      note.textContent = "Finding your location…";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Math.round(pos.coords.latitude * 10000) / 10000;
+          const lng = Math.round(pos.coords.longitude * 10000) / 10000;
+          note.textContent = "Using your current location.";
+          setLocation({ name: "My location", lat, lng });
+        },
+        () => { note.textContent = "Location access was blocked here. Pick a city, or open the GitHub Pages link to use GPS."; },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 3600000 }
+      );
+    };
+
+    // Unlock sound on the first tap so the athan alert can beep later.
+    document.addEventListener("pointerdown", () => {
+      try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch {}
+    }, { once: true });
+
+    fillPrayerSettings();
+    setInterval(prayerTick, 20000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") prayerTick();
+    });
+
     render();
+    prayerTick();
   </script>
 </body>
 </html>
