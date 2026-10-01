@@ -867,9 +867,11 @@
         const items = byDate[d].map(r => {
           const cls = r.status === "on-time" ? "on-time" : (r.status === "missed" ? "missed" : "late");
           const when = r.completedAt ? new Date(r.completedAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
-          return '<div class="arch-item ' + cls + '"><div><div class="label">' + (r.text || ("Salah · " + r.prayer)) +
-            '</div><div class="meta">Athan ' + (r.time||"") + (when ? " · done " + when : "") +
-            " · " + (r.rakats||"") + " rakats</div></div><div class="meta">' + cls.replace("-", " ") + "</div></div>";
+          var label = r.text || ("Salah · " + r.prayer);
+          var metaLine = "Athan " + (r.time || "") + (when ? " · done " + when : "") + " · " + (r.rakats || "") + " rakats";
+          return '<div class="arch-item ' + cls + '"><div><div class="label">' + label +
+            '</div><div class="meta">' + metaLine + '</div></div><div class="meta">' +
+            cls.replace("-", " ") + '</div></div>';
         }).join("");
         return '<div class="arch-day"><h3>' + d + "</h3>" + items + "</div>";
       }).join("");
