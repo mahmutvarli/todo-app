@@ -157,7 +157,7 @@
         <button type="button" class="secondary" id="refreshPrayersBtn">Refresh</button>
       </div>
       <div class="toggle-row">
-        <span>Auto-add prayer todos each day</span>
+        <span>Add each salah todo at athan time</span>
         <input type="checkbox" id="autoPrayerTodos" checked />
       </div>
       <div class="toggle-row">
@@ -421,23 +421,47 @@
       }).join("");
     }
 
-    function upsertPrayerTodos(times, date) {
-      const s = loadPrayerSettings();
-      if (!s.autoTodos) return;
-      let items = load();
-      items = items.filter(it => !(it.kind === "prayer" && it.date === date));
-      const block = PRAYER_NAMES.map(name => ({
+    function prayerTodoExists(items, date, name) {
+      return items.some(it => it.kind === "prayer" && it.date === date && it.prayer === name);
+    }
+
+    function addPrayerTodoNow(name, time, date) {
+      const items = load();
+      if (prayerTodoExists(items, date, name)) return false;
+      items.unshift({
         text: "Salah · " + name,
         done: false,
         kind: "prayer",
         prayer: name,
-        time: times[name],
-        date
-      }));
-      // insert prayers near top but keep newest manual todos first: put prayers after non-prayer undones? Keep simple: prepend prayers for today
-      items = block.concat(items);
+        time: time,
+        date: date
+      });
       save(items);
       render();
+      return true;
+    }
+
+    /** Only add a salah todo once its athan time is reached (not the whole day upfront). */
+    function releaseDuePrayerTodos() {
+      const s = loadPrayerSettings();
+      if (!s.autoTodos || !s.times || s.lastDate !== todayISO()) return;
+      const now = new Date();
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const date = s.lastDate;
+      let added = false;
+      for (const name of PRAYER_NAMES) {
+        const [h, m] = (s.times[name] || "99:99").split(":").map(Number);
+        if (!Number.isFinite(h)) continue;
+        if (mins >= h * 60 + m) {
+          if (addPrayerTodoNow(name, s.times[name], date)) added = true;
+        }
+      }
+      return added;
+    }
+
+    function upsertPrayerTodos(times, date) {
+      // kept name for callers: schedule by releasing due only
+      releaseDuePrayerTodos();
     }
 
     async function fetchPrayerTimes() {
@@ -501,7 +525,7 @@
       const s = loadPrayerSettings();
       s.autoTodos = e.target.checked;
       savePrayerSettings(s);
-      if (s.autoTodos && s.times) upsertPrayerTodos(s.times, todayISO());
+      if (s.autoTodos && s.times) releaseDuePrayerTodos();
     };
     document.getElementById("athanNotify").onchange = async (e) => {
       const s = loadPrayerSettings();
@@ -551,11 +575,11 @@
         if (s.lastDate !== todayISO() || !s.times) fetchPrayerTimes();
         else {
           renderPrayerTimes(s);
-          if (s.autoTodos) upsertPrayerTodos(s.times, todayISO());
+          releaseDuePrayerTodos();
         }
       }
     })();
-    setInterval(checkAthanNotify, 15000);
+    setInterval(() => { releaseDuePrayerTodos(); checkAthanNotify(); }, 15000);
   </script>
 </body>
 </html>
