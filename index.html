@@ -159,7 +159,7 @@
         <button type="button" class="secondary" id="clearSalahBtn">Clear salah todos</button>
       </div>
       <div class="toggle-row">
-        <span>Show only current salah on Todos</span>
+        <span>Add salah at athan; remove when checked off</span>
         <input type="checkbox" id="autoPrayerTodos" checked />
       </div>
       <div class="toggle-row">
@@ -288,6 +288,8 @@
             if (!was && items[i].done) L.onTime = (L.onTime|0) + r;
             if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - r);
             saveLedger(L);
+            // checked off → remove from list (as requested)
+            if (!was && items[i].done) items.splice(i, 1);
           }
           save(items); render();
         };
@@ -497,7 +499,6 @@
       return (h || 0) * 60 + (m || 0);
     }
 
-    /** Current farz window: from this athan until the next (Isha until midnight+Fajr). */
     function currentPrayerName(times) {
       if (!times) return null;
       const now = new Date();
@@ -506,32 +507,39 @@
       for (const name of PRAYER_NAMES) {
         if (mins >= toMins(times[name])) current = name;
       }
-      return current; // null before Fajr
+      return current;
     }
 
-    /** Keep only the current salah on the todo list (remove other auto prayer todos). */
+    /**
+     * At each athan, ADD that salah if missing.
+     * Do NOT auto-remove earlier salah — only the user checking it off clears it
+     * (done items are dropped from the list).
+     */
     function releaseDuePrayerTodos() {
       const s = loadPrayerSettings();
-      if (!s.autoTodos || !s.times || s.lastDate !== todayISO()) return;
-      const date = s.lastDate;
+      if (!s.autoTodos || !s.times) return;
+      // ensure today times
+      const date = todayISO();
+      if (s.lastDate !== date) return;
       const current = currentPrayerName(s.times);
       let items = load();
-      // drop auto prayers that are not the current window (keep manual todos)
-      items = items.filter(it => !(it.kind === "prayer" && (it.prayer !== current || it.date !== date)));
-      if (current) {
-        if (!prayerTodoExists(items, date, current)) {
-          items.unshift({
-            text: "Salah · " + current,
-            done: false,
-            kind: "prayer",
-            prayer: current,
-            time: s.times[current],
-            date: date
-          });
-        }
+      // remove completed prayer todos (checked off = gone)
+      const before = items.length;
+      items = items.filter(it => !(it.kind === "prayer" && it.done));
+      if (current && !prayerTodoExists(items, date, current)) {
+        items.unshift({
+          text: "Salah · " + current,
+          done: false,
+          kind: "prayer",
+          prayer: current,
+          time: s.times[current],
+          date: date
+        });
       }
+      // also: after midnight, add Fajr when due; keep yesterday unchecked Isha until checked
       save(items);
-      render();
+      if (items.length !== before || (current && items[0] && items[0].prayer === current)) render();
+      else if (current) render();
     }
 
     function upsertPrayerTodos(times, date) {
