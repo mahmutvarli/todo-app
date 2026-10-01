@@ -62,6 +62,7 @@
     }
     li.done span { color: var(--muted); text-decoration: line-through; }
     li.prayer-item { border-left: 3px solid var(--prayer); }
+    li.habit-item { border-left: 3px solid #fbbf24; }
     li span { flex: 1; word-break: break-word; }
     .sub { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
     .check {
@@ -307,6 +308,7 @@
         const li = document.createElement("li");
         if (item.done) li.classList.add("done");
         if (item.kind === "prayer") li.classList.add("prayer-item");
+        if (item.kind === "habit") li.classList.add("habit-item");
         const check = document.createElement("button");
         check.type = "button";
         check.className = "check";
@@ -320,14 +322,10 @@
             if (!was && items[i].done) L.onTime = (L.onTime|0) + r;
             if (was && !items[i].done) L.onTime = Math.max(0, (L.onTime|0) - r);
             saveLedger(L);
-            // checked off → archive + remember + remove from list
             if (!was && items[i].done) {
               const st = completionStatus(items[i].prayer, items[i].time, new Date().toISOString());
               archivePrayer(items[i], st);
               if (st === "late") {
-                // late completion: count as makeup rakats not on-time
-                const FARZ = { Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 };
-                const r = FARZ[items[i].prayer] || 0;
                 const L2 = loadLedger();
                 L2.onTime = Math.max(0, (L2.onTime|0) - r);
                 L2.makeup = (L2.makeup|0) + r;
@@ -342,6 +340,21 @@
               localStorage.setItem(doneKey, JSON.stringify(doneMap));
               items.splice(i, 1);
             }
+          } else if (items[i].kind === "habit" && !was && items[i].done) {
+            archivePrayer({
+              prayer: items[i].habitId,
+              text: items[i].text,
+              time: items[i].time,
+              date: items[i].date
+            }, "on-time");
+            const doneKey = "todo-app-habit-done-v1";
+            let doneMap = {};
+            try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
+            const d = items[i].date || todayISO();
+            doneMap[d] = doneMap[d] || [];
+            if (items[i].habitId && !doneMap[d].includes(items[i].habitId)) doneMap[d].push(items[i].habitId);
+            localStorage.setItem(doneKey, JSON.stringify(doneMap));
+            items.splice(i, 1);
           }
           save(items); render();
         };
@@ -869,6 +882,80 @@
       renderArchive();
     };
 
+    // Non-makeup habits (e.g. brush teeth) — expire to archive, no makeup
+    const HABITS = [
+      { id: "brush-am", text: "Brush teeth (morning)", time: "10:00", makeup: false },
+      { id: "brush-pm", text: "Brush teeth (night)", time: "22:00", makeup: false }
+    ];
+
+    function habitExists(items, date, id) {
+      return items.some(it => it.kind === "habit" && it.date === date && it.habitId === id);
+    }
+
+    function releaseHabits() {
+      const date = todayISO();
+      const now = new Date();
+      const mins = now.getHours() * 60 + now.getMinutes();
+      let items = load();
+      let changed = false;
+      const doneKey = "todo-app-habit-done-v1";
+      let doneMap = {};
+      try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
+      const doneToday = new Set(doneMap[date] || []);
+
+      for (const h of HABITS) {
+        const hMins = toMins(h.time);
+        // add when due time reached
+        if (mins >= hMins && !habitExists(items, date, h.id) && !doneToday.has(h.id)) {
+          items.unshift({
+            text: h.text,
+            done: false,
+            kind: "habit",
+            habitId: h.id,
+            makeup: false,
+            time: h.time,
+            date
+          });
+          changed = true;
+        }
+      }
+
+      // expire: if next habit time passed or end of day for last — move unchecked to archive as missed
+      const nextBoundary = (h) => {
+        const idx = HABITS.findIndex(x => x.id === h.id);
+        if (idx >= 0 && idx < HABITS.length - 1) return toMins(HABITS[idx + 1].time);
+        return 24 * 60;
+      };
+
+      const keep = [];
+      for (const it of items) {
+        if (it.kind !== "habit" || it.done) { keep.push(it); continue; }
+        const h = HABITS.find(x => x.id === it.habitId);
+        if (!h) { keep.push(it); continue; }
+        const end = nextBoundary(h);
+        if (it.date === date && mins >= end) {
+          archivePrayer({
+            prayer: it.habitId,
+            text: it.text,
+            time: it.time,
+            date: it.date
+          }, "missed");
+          // mark done so not re-added
+          doneMap[date] = doneMap[date] || [];
+          if (!doneMap[date].includes(it.habitId)) doneMap[date].push(it.habitId);
+          changed = true;
+        } else {
+          keep.push(it);
+        }
+      }
+      if (changed) {
+        localStorage.setItem(doneKey, JSON.stringify(doneMap));
+        save(keep);
+        render();
+      }
+    }
+
+
 
     // migrate
     if (!localStorage.getItem(KEY)) {
@@ -890,7 +977,7 @@
         }
       }
     })();
-    setInterval(() => { releaseDuePrayerTodos(); checkAthanNotify(); }, 15000);
+    setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); }, 15000);
   </script>
 </body>
 </html>
