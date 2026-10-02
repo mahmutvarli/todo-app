@@ -361,6 +361,35 @@
       }
       return out;
     }
+    /**
+     * Local open (unchecked) auto-todos beat stale cloud done flags.
+     * Empty/stale cloud must not mark a salah/habit done if this device still shows it open.
+     */
+    function stripDoneIdsForOpenItems(doneMap, openByDate) {
+      const out = {};
+      for (const [date, arr] of Object.entries(doneMap || {})) {
+        const open = openByDate && openByDate[date] ? openByDate[date] : null;
+        const list = Array.isArray(arr) ? arr : [];
+        out[date] = open ? list.filter(id => !open.has(id)) : [...list];
+      }
+      return out;
+    }
+    function collectOpenAutoIds(items) {
+      const prayer = {};
+      const habit = {};
+      for (const it of items || []) {
+        if (it.done) continue;
+        if (it.kind === "prayer" && it.prayer && it.date) {
+          prayer[it.date] = prayer[it.date] || new Set();
+          prayer[it.date].add(it.prayer);
+        }
+        if (it.kind === "habit" && it.habitId && it.date) {
+          habit[it.date] = habit[it.date] || new Set();
+          habit[it.date].add(it.habitId);
+        }
+      }
+      return { prayer, habit };
+    }
     function recordDoneId(doneKey, date, id) {
       if (!date || !id) return;
       const map = parseDoneMapJson(localStorage.getItem(doneKey));
@@ -368,7 +397,7 @@
       if (!map[date].includes(id)) map[date].push(id);
       localStorage.setItem(doneKey, JSON.stringify(map));
     }
-    /** Drop auto todos already marked done for their date (after cloud restore). */
+    /** Drop auto todos already marked done for their date (after cloud restore). Never removes undoned salah/habits. */
     function pruneCompletedAutoTodos() {
       const prayerDone = parseDoneMapJson(localStorage.getItem("todo-app-prayer-done-v1"));
       const habitDone = parseDoneMapJson(localStorage.getItem("todo-app-habit-done-v1"));
@@ -376,11 +405,12 @@
       const next = items.filter(it => {
         if (it.kind === "prayer" && it.prayer) {
           const d = it.date;
-          if (d && Array.isArray(prayerDone[d]) && prayerDone[d].includes(it.prayer)) return false;
+          // Only prune when explicitly recorded done for that date — never on empty/stale absence of data.
+          if (d && Array.isArray(prayerDone[d]) && prayerDone[d].length && prayerDone[d].includes(it.prayer)) return false;
         }
         if (it.kind === "habit" && it.habitId) {
           const d = it.date;
-          if (d && Array.isArray(habitDone[d]) && habitDone[d].includes(it.habitId)) return false;
+          if (d && Array.isArray(habitDone[d]) && habitDone[d].length && habitDone[d].includes(it.habitId)) return false;
         }
         return true;
       });
@@ -699,10 +729,21 @@
       return current;
     }
 
+    /** All salah whose athan has passed today (Fajr…current), oldest first. */
+    function duePrayerNames(times, nowMins) {
+      if (!times) return [];
+      const mins = nowMins != null ? nowMins : (new Date().getHours() * 60 + new Date().getMinutes());
+      const due = [];
+      for (const name of PRAYER_NAMES) {
+        if (mins >= toMins(times[name])) due.push(name);
+      }
+      return due;
+    }
+
     /**
-     * At each athan, ADD that salah if missing.
+     * At each athan, ADD every due unpaid salah if missing (not only the current window).
      * Do NOT auto-remove earlier salah — only the user checking it off clears it
-     * (done items are dropped from the list).
+     * (done items are dropped from the list). Empty/stale cloud must not hide undoned salah.
      */
     function releaseDuePrayerTodos() {
       const s = loadPrayerSettings();
@@ -710,25 +751,29 @@
       // ensure today times
       const date = todayISO();
       if (s.lastDate !== date) return;
-      const current = currentPrayerName(s.times);
+      const due = duePrayerNames(s.times);
       let items = load();
       // remove completed prayer todos (checked off = gone)
       const before = items.length;
       items = items.filter(it => !(it.kind === "prayer" && it.done));
       const doneMap = parseDoneMapJson(localStorage.getItem("todo-app-prayer-done-v1"));
-      const doneToday = new Set(doneMap[date] || []);
-      if (current && !prayerTodoExists(items, date, current) && !doneToday.has(current)) {
+      const doneToday = new Set(Array.isArray(doneMap[date]) ? doneMap[date] : []);
+      // Add due unpaid prayers newest-first so current ends up at top after unshifts
+      for (let i = due.length - 1; i >= 0; i--) {
+        const name = due[i];
+        if (prayerTodoExists(items, date, name) || doneToday.has(name)) continue;
         items.unshift({
-          text: "Salah · " + current,
+          text: "Salah · " + name,
           done: false,
           kind: "prayer",
-          prayer: current,
-          time: s.times[current],
+          prayer: name,
+          time: s.times[name],
           date: date
         });
       }
       // also: after midnight, add Fajr when due; keep yesterday unchecked Isha until checked
       save(items);
+      const current = due.length ? due[due.length - 1] : null;
       if (items.length !== before || (current && items[0] && items[0].prayer === current)) render();
       else if (current) render();
     }
@@ -1523,6 +1568,9 @@
     window.releaseDuePrayerTodos = releaseDuePrayerTodos;
     window.releaseHabits = releaseHabits;
     window.mergeDoneMaps = mergeDoneMaps;
+    window.stripDoneIdsForOpenItems = stripDoneIdsForOpenItems;
+    window.collectOpenAutoIds = collectOpenAutoIds;
+    window.duePrayerNames = duePrayerNames;
     window.pruneCompletedAutoTodos = pruneCompletedAutoTodos;
     window.recordDoneId = recordDoneId;
 
@@ -1688,19 +1736,48 @@
         }
         applyingCloud = true;
         try {
+          // Snapshot BEFORE cloud overwrites — open todos prove "not checked off";
+          // today's local times must survive stale cloud lastDate.
+          let localOpen = { prayer: {}, habit: {} };
+          let localPsSnap = null;
+          try { localOpen = collectOpenAutoIds(load()); } catch (_) {}
+          try { localPsSnap = loadPrayerSettings(); } catch (_) { localPsSnap = null; }
           for (const k of SYNC_KEYS) {
             if (!Object.prototype.hasOwnProperty.call(data.keys, k)) continue;
             const val = data.keys[k];
-            // Merge done maps: stale/empty cloud must not undo today's checked-off salah/habits.
+            // Merge done maps: empty cloud must not undo local check-offs; open local
+            // todos strip stale cloud-only done flags so undoned salah is not pruned.
             if (k === "todo-app-prayer-done-v1" || k === "todo-app-habit-done-v1") {
-              const merged = mergeDoneMaps(localStorage.getItem(k), val);
+              let merged = mergeDoneMaps(localStorage.getItem(k), val);
+              const open = k === "todo-app-prayer-done-v1" ? localOpen.prayer : localOpen.habit;
+              merged = stripDoneIdsForOpenItems(merged, open);
               localStorage.setItem(k, JSON.stringify(merged));
               continue;
             }
             if (val == null) localStorage.removeItem(k);
             else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
           }
-          // Cloud todos may still list a salah that was checked off locally — strip those.
+          // Prefer today's local prayer times over stale cloud lastDate so inject still runs.
+          try {
+            const psKey = "todo-app-prayer-settings-v1";
+            if (Object.prototype.hasOwnProperty.call(data.keys, psKey) && localPsSnap) {
+              const cloudPs = JSON.parse(localStorage.getItem(psKey) || "{}");
+              const today = todayISO();
+              if (localPsSnap.times && localPsSnap.lastDate === today &&
+                  (!cloudPs || cloudPs.lastDate !== today || !cloudPs.times)) {
+                const kept = Object.assign({}, cloudPs, {
+                  times: localPsSnap.times,
+                  lastDate: localPsSnap.lastDate,
+                  lat: localPsSnap.lat != null ? localPsSnap.lat : cloudPs.lat,
+                  lon: localPsSnap.lon != null ? localPsSnap.lon : cloudPs.lon,
+                  autoTodos: localPsSnap.autoTodos != null ? localPsSnap.autoTodos : cloudPs.autoTodos
+                });
+                localStorage.setItem(psKey, JSON.stringify(kept));
+              }
+            }
+          } catch (_) {}
+          // Cloud todos may still list a salah that was checked off locally — strip those only.
+          // Never prune undoned salah (not in reconciled done map).
           pruneCompletedAutoTodos();
         } finally {
           applyingCloud = false;

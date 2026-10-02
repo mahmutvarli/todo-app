@@ -7,6 +7,7 @@ export const PRAYER_NAMES = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
 export const PRAYER_DONE_KEY = "todo-app-prayer-done-v1";
 export const HABIT_DONE_KEY = "todo-app-habit-done-v1";
 export const TODOS_KEY = "todo-app-v3";
+export const PRAYER_SETTINGS_KEY = "todo-app-prayer-settings-v1";
 
 export function parseDoneMap(raw) {
   try {
@@ -32,6 +33,37 @@ export function mergeDoneMaps(localRaw, cloudRaw) {
   return out;
 }
 
+/**
+ * Local open (unchecked) auto-todos beat stale cloud done flags.
+ * Empty/stale cloud must not mark a salah/habit done if this device still shows it open.
+ */
+export function stripDoneIdsForOpenItems(doneMap, openByDate) {
+  const out = {};
+  for (const [date, arr] of Object.entries(doneMap || {})) {
+    const open = openByDate && openByDate[date] ? openByDate[date] : null;
+    const list = Array.isArray(arr) ? arr : [];
+    out[date] = open ? list.filter((id) => !open.has(id)) : [...list];
+  }
+  return out;
+}
+
+export function collectOpenAutoIds(items) {
+  const prayer = {};
+  const habit = {};
+  for (const it of items || []) {
+    if (it.done) continue;
+    if (it.kind === "prayer" && it.prayer && it.date) {
+      prayer[it.date] = prayer[it.date] || new Set();
+      prayer[it.date].add(it.prayer);
+    }
+    if (it.kind === "habit" && it.habitId && it.date) {
+      habit[it.date] = habit[it.date] || new Set();
+      habit[it.date].add(it.habitId);
+    }
+  }
+  return { prayer, habit };
+}
+
 export function recordDone(doneMap, date, id) {
   if (!date || !id) return doneMap;
   const next = { ...doneMap };
@@ -41,10 +73,17 @@ export function recordDone(doneMap, date, id) {
 }
 
 export function isDone(doneMap, date, id) {
-  return !!(doneMap && date && id && Array.isArray(doneMap[date]) && doneMap[date].includes(id));
+  return !!(
+    doneMap &&
+    date &&
+    id &&
+    Array.isArray(doneMap[date]) &&
+    doneMap[date].length &&
+    doneMap[date].includes(id)
+  );
 }
 
-/** Remove prayer/habit todos that are marked done for their date. */
+/** Remove prayer/habit todos that are marked done for their date. Never prunes undoned. */
 export function pruneCompletedAutoTodos(items, prayerDone, habitDone) {
   return (items || []).filter((it) => {
     if (it.kind === "prayer" && it.prayer) {
@@ -79,26 +118,35 @@ export function currentPrayerName(times, nowMins) {
   return current;
 }
 
+/** All salah whose athan has passed (Fajr…current), oldest first. */
+export function duePrayerNames(times, nowMins) {
+  if (!times) return [];
+  const due = [];
+  for (const name of PRAYER_NAMES) {
+    if (nowMins >= toMins(times[name])) due.push(name);
+  }
+  return due;
+}
+
 /**
- * Inject current salah if due and not already present / not done today.
+ * Inject every due unpaid salah (not only the current window).
  * Mirrors releaseDuePrayerTodos add path.
  */
 export function injectCurrentPrayer(items, { times, date, nowMins, autoTodos, prayerDone }) {
   if (!autoTodos || !times) return items;
-  const current = currentPrayerName(times, nowMins);
+  const due = duePrayerNames(times, nowMins);
   let next = (items || []).filter((it) => !(it.kind === "prayer" && it.done));
-  if (
-    current &&
-    !prayerTodoExists(next, date, current) &&
-    !isDone(prayerDone, date, current)
-  ) {
+  // Newest-first unshift so list order matches live app (current on top)
+  for (let i = due.length - 1; i >= 0; i--) {
+    const name = due[i];
+    if (prayerTodoExists(next, date, name) || isDone(prayerDone, date, name)) continue;
     next = [
       {
-        text: "Salah · " + current,
+        text: "Salah · " + name,
         done: false,
         kind: "prayer",
-        prayer: current,
-        time: times[current],
+        prayer: name,
+        time: times[name],
         date,
       },
       ...next,
@@ -118,22 +166,64 @@ export function checkOffPrayer(items, prayerDone, index) {
 }
 
 /**
- * Apply a cloud blob onto local keys with done-map merge + todo prune.
+ * Apply a cloud blob onto local keys with done-map merge + open-item reconcile + todo prune.
  * localStore / cloudKeys are plain { key: stringValue } maps.
  */
 export function applyCloudBlobWithDoneMerge(localStore, cloudKeys, syncKeys) {
   const next = { ...localStore };
+  let localItems = [];
+  try {
+    localItems = JSON.parse(localStore[TODOS_KEY] || "[]") || [];
+  } catch {
+    localItems = [];
+  }
+  const localOpen = collectOpenAutoIds(localItems);
+
   for (const k of syncKeys) {
     if (!Object.prototype.hasOwnProperty.call(cloudKeys, k)) continue;
     const val = cloudKeys[k];
     if (k === PRAYER_DONE_KEY || k === HABIT_DONE_KEY) {
-      next[k] = JSON.stringify(mergeDoneMaps(localStore[k], val));
+      let merged = mergeDoneMaps(localStore[k], val);
+      const open = k === PRAYER_DONE_KEY ? localOpen.prayer : localOpen.habit;
+      merged = stripDoneIdsForOpenItems(merged, open);
+      next[k] = JSON.stringify(merged);
     } else if (val == null) {
       delete next[k];
     } else {
       next[k] = typeof val === "string" ? val : JSON.stringify(val);
     }
   }
+
+  // Prefer today's local prayer times over stale cloud lastDate.
+  if (Object.prototype.hasOwnProperty.call(cloudKeys, PRAYER_SETTINGS_KEY)) {
+    try {
+      const localPs = JSON.parse(localStore[PRAYER_SETTINGS_KEY] || "{}") || {};
+      const cloudPs = JSON.parse(next[PRAYER_SETTINGS_KEY] || "{}") || {};
+      const today =
+        localPs.lastDate && localPs.times
+          ? localPs.lastDate
+          : cloudPs.lastDate;
+      if (
+        localPs.times &&
+        localPs.lastDate &&
+        (!cloudPs.lastDate || cloudPs.lastDate !== localPs.lastDate || !cloudPs.times)
+      ) {
+        next[PRAYER_SETTINGS_KEY] = JSON.stringify({
+          ...cloudPs,
+          times: localPs.times,
+          lastDate: localPs.lastDate,
+          lat: localPs.lat != null ? localPs.lat : cloudPs.lat,
+          lon: localPs.lon != null ? localPs.lon : cloudPs.lon,
+          autoTodos:
+            localPs.autoTodos != null ? localPs.autoTodos : cloudPs.autoTodos,
+        });
+      }
+      void today;
+    } catch {
+      /* keep cloud settings */
+    }
+  }
+
   const prayerDone = parseDoneMap(next[PRAYER_DONE_KEY]);
   const habitDone = parseDoneMap(next[HABIT_DONE_KEY]);
   if (Object.prototype.hasOwnProperty.call(next, TODOS_KEY) || localStore[TODOS_KEY]) {
