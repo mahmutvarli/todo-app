@@ -202,7 +202,7 @@
   <section id="panel-ledger" class="panel">
     <div class="prayer-card" style="text-align:left">
       <h2 style="color:var(--text)">Salah ledger</h2>
-      <p class="status" id="ledgerHint">Enter birthday and accountability start. Counts farz rakats/day (Fajr 2, Dhuhr 4, Asr 4, Maghrib 3, Isha 4 = 17).</p>
+      <p class="status" id="ledgerHint">Enter birthday, accountability start, and optionally when you started praying (month–year). Counts farz rakats/day (Fajr 2, Dhuhr 4, Asr 4, Maghrib 3, Isha 4 = 17).</p>
       <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Birthday
         <input id="bday" type="date" style="margin-top:6px" />
       </label>
@@ -212,16 +212,22 @@
       <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Or age at puberty (years)
         <input id="pubertyAge" type="number" min="9" max="18" step="1" value="15" style="margin-top:6px" />
       </label>
+      <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Started praying since (month–year)
+        <input id="startedPraying" type="month" style="margin-top:6px" />
+      </label>
+      <p class="hint" style="text-align:left;margin-top:6px" id="startedPrayingHint">Optional. Days from accountability until this month count as historical red debt (never prayed). From this month on, only misses add red; on-time stays green, late/make-up stays orange.</p>
       <div class="controls" style="margin-top:14px;justify-content:flex-start">
         <button type="button" class="primary" id="saveLedgerBtn">Save &amp; calculate</button>
       </div>
       <div id="ledgerStats" style="margin-top:16px;display:none">
         <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
         <div class="prayer-row"><span class="name">Farz rakats owed (17×days)</span><span class="time" id="statOwed">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Historical debt before started praying (red)</span><span class="time" id="statHistorical" style="color:var(--danger)">0</span></div>
+        <div class="prayer-row"><span class="name">Days since started praying</span><span class="time" id="statActiveDays">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">On time rakats (green)</span><span class="time" id="statGreen" style="color:var(--ok)">0</span></div>
         <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made-up rakats (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed rakats (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
-        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count.</p>
+        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count (pays down red, including historical debt).</p>
         <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up farz rakats
           <div class="row" style="margin-top:6px;margin-bottom:0">
             <input id="makeupCount" type="number" min="1" max="50000" value="1" />
@@ -230,7 +236,7 @@
         </label>
       </div>
     </div>
-    <p class="hint">This is a personal tracker, not a fatwa. Default puberty age is editable; set the exact accountability date if you know it.</p>
+    <p class="hint">This is a personal tracker, not a fatwa. Default puberty age is editable; set the exact accountability date and “started praying since” month if you know them.</p>
   </section>
 
 
@@ -724,11 +730,11 @@
     function loadLedger() {
       try {
         return Object.assign({
-          bday: "", puberty: "", pubertyAge: 15,
+          bday: "", puberty: "", pubertyAge: 15, startedPraying: "",
           onTime: 0, makeup: 0
         }, JSON.parse(localStorage.getItem(LEDGER_KEY) || "{}"));
       } catch {
-        return { bday: "", puberty: "", pubertyAge: 15, onTime: 0, makeup: 0 };
+        return { bday: "", puberty: "", pubertyAge: 15, startedPraying: "", onTime: 0, makeup: 0 };
       }
     }
     function saveLedger(L) { localStorage.setItem(LEDGER_KEY, JSON.stringify(L)); }
@@ -753,42 +759,104 @@
       const age = Number(L.pubertyAge) || 15;
       return new Date(bd.getFullYear() + age, bd.getMonth(), bd.getDate());
     }
+    /** "YYYY-MM" → first day of that month, or null */
+    function parseStartedPraying(s) {
+      if (!s || !/^\d{4}-\d{2}$/.test(s)) return null;
+      const [y, m] = s.split("-").map(Number);
+      if (!y || m < 1 || m > 12) return null;
+      return new Date(y, m - 1, 1);
+    }
     function ledgerCounts(L) {
       const start = accountabilityStart(L);
       if (!start) return null;
       const today = new Date();
-      if (start > today) return { days: 0, owed: 0, green: L.onTime|0, orange: L.makeup|0, red: 0 };
-      const days = daysBetween(start, today);
-      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
-      const owed = days * RAKATS_PER_DAY;
       const green = Math.max(0, L.onTime|0);
       const orange = Math.max(0, L.makeup|0);
-      const red = Math.max(0, owed - green - orange);
-      return { days, owed, green, orange, red };
+      if (start > today) {
+        return {
+          days: 0, owed: 0, green, orange, red: 0,
+          historical: 0, activeDays: 0, activeOwed: 0, hasStartedPraying: false
+        };
+      }
+      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
+      const days = daysBetween(start, today);
+      const owed = days * RAKATS_PER_DAY;
+      const started = parseStartedPraying(L.startedPraying);
+
+      // No started-praying date: previous behavior (full span owed; red = gap).
+      if (!started) {
+        const red = Math.max(0, owed - green - orange);
+        return {
+          days, owed, green, orange, red,
+          historical: 0, activeDays: days, activeOwed: owed, hasStartedPraying: false
+        };
+      }
+
+      // Historical: accountability start → day before started-praying month.
+      // Active: started-praying month start → today (misses via owed−green−orange).
+      let historicalDays = 0;
+      let activeStart = start;
+      if (start < started) {
+        const histEnd = new Date(started.getFullYear(), started.getMonth(), 0); // day before month start
+        if (histEnd >= start) historicalDays = daysBetween(start, histEnd);
+        activeStart = started;
+      } else {
+        // Started praying at/before accountability — no historical debt.
+        activeStart = start;
+      }
+
+      const historical = historicalDays * RAKATS_PER_DAY;
+      let activeDays = 0;
+      if (activeStart <= today) activeDays = daysBetween(activeStart, today);
+      const activeOwed = activeDays * RAKATS_PER_DAY;
+      // Makeup (orange) pays down red including historical debt; green is on-time after started praying.
+      const red = Math.max(0, historical + activeOwed - green - orange);
+      return {
+        days, owed: historical + activeOwed, green, orange, red,
+        historical, activeDays, activeOwed, hasStartedPraying: true
+      };
     }
     function syncLedgerUI() {
       const L = loadLedger();
       document.getElementById("bday").value = L.bday || "";
       document.getElementById("puberty").value = L.puberty || "";
       document.getElementById("pubertyAge").value = L.pubertyAge || 15;
+      document.getElementById("startedPraying").value = L.startedPraying || "";
+      const hintEl = document.getElementById("startedPrayingHint");
+      if (!L.startedPraying) {
+        hintEl.textContent = "Not set — counting from accountability start (previous behavior). Set month–year so years before you started praying stay red historical debt.";
+      } else {
+        hintEl.textContent = "From accountability until the day before this month: all farz rakats are historical red debt. From this month on: on-time = green, late/make-up = orange, misses = red.";
+      }
       const c = ledgerCounts(L);
       const box = document.getElementById("ledgerStats");
       if (!c) { box.style.display = "none"; return; }
       box.style.display = "block";
       document.getElementById("statDays").textContent = String(c.days);
       document.getElementById("statOwed").textContent = String(c.owed);
+      document.getElementById("statHistorical").textContent = String(c.historical);
+      document.getElementById("statActiveDays").textContent = String(c.activeDays);
       document.getElementById("statGreen").textContent = String(c.green);
       document.getElementById("statOrange").textContent = String(c.orange);
       document.getElementById("statRed").textContent = String(c.red);
-      document.getElementById("ledgerHint").textContent =
-        c.red === 0 ? "Ledger balanced — green + orange cover all owed rakats." :
-        (c.red + " farz rakats still missed / owed (red).");
+      if (c.red === 0) {
+        document.getElementById("ledgerHint").textContent =
+          "Ledger balanced — green + orange cover all owed rakats.";
+      } else if (c.hasStartedPraying && c.historical > 0) {
+        document.getElementById("ledgerHint").textContent =
+          c.red + " farz rakats still owed (red), including " + c.historical +
+          " historical before started praying (make-up pays these down).";
+      } else {
+        document.getElementById("ledgerHint").textContent =
+          c.red + " farz rakats still missed / owed (red).";
+      }
     }
     document.getElementById("saveLedgerBtn").onclick = () => {
       const L = loadLedger();
       L.bday = document.getElementById("bday").value;
       L.puberty = document.getElementById("puberty").value;
       L.pubertyAge = Number(document.getElementById("pubertyAge").value) || 15;
+      L.startedPraying = document.getElementById("startedPraying").value || "";
       if (!L.bday && !L.puberty) {
         document.getElementById("ledgerHint").textContent = "Enter birthday or an accountability start date.";
         return;
