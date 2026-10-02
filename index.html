@@ -691,13 +691,15 @@
       releaseDuePrayerTodos();
     }
 
-    async function fetchPrayerTimes() {
+    async function fetchPrayerTimes(opts) {
+      const quiet = !!(opts && opts.quiet);
       const s = loadPrayerSettings();
       if (s.lat == null || s.lon == null) {
-        statusEl.textContent = "Location needed.";
+        if (!quiet) statusEl.textContent = "Location needed.";
         return;
       }
-      statusEl.textContent = "Loading prayer times…";
+      const hadCache = !!(s.times && s.lastDate === todayISO());
+      if (!quiet || !hadCache) statusEl.textContent = "Loading prayer times…";
       const method = document.getElementById("prayerMethod").value || s.method || "13";
       const url = "https://api.aladhan.com/v1/timings?latitude=" + s.lat +
         "&longitude=" + s.lon + "&method=" + method;
@@ -709,15 +711,28 @@
         const times = {};
         PRAYER_NAMES.forEach(n => { times[n] = (t[n] || "").split(" ")[0]; });
         const meta = data.data.meta || {};
+        const prevTimes = hadCache ? JSON.stringify(s.times) : null;
+        const nextTimes = JSON.stringify(times);
+        const dateChanged = s.lastDate !== todayISO();
+        const timesChanged = prevTimes !== nextTimes;
         s.method = method;
         s.times = times;
         s.lastDate = todayISO();
-        s.placeLabel = meta.timezone || "";
+        s.placeLabel = meta.timezone || s.placeLabel || "";
         savePrayerSettings(s);
         renderPrayerTimes(s);
+        // Always ensure due salah from (possibly updated) times; network no longer gates first paint
         upsertPrayerTodos(times, s.lastDate);
+        if (quiet && hadCache && !dateChanged && !timesChanged) {
+          /* background refresh matched cache — leave prayer status as renderPrayerTimes set it */
+        }
       } catch (e) {
-        statusEl.textContent = "Could not load times. Check network and try Refresh.";
+        if (hadCache) {
+          // Keep showing cached times; only surface error if we had nothing
+          renderPrayerTimes(s);
+        } else {
+          statusEl.textContent = "Could not load times. Check network and try Refresh.";
+        }
       }
     }
 
@@ -1246,6 +1261,16 @@
 
 
 
+    /**
+     * Instant salah/habit injection from local prayer-settings cache + habit schedule.
+     * Must NOT wait on Aladhan or cloud — used on boot and again after cloud apply.
+     */
+    function injectDueTodosFromCache() {
+      // releaseDuePrayerTodos no-ops unless autoTodos + times + lastDate===today
+      try { releaseDuePrayerTodos(); } catch (_) {}
+      try { releaseHabits(); } catch (_) {}
+    }
+
     // Expose helpers for cloud sync module (refreshAppUI after applyCloudBlob)
     window.render = render;
     window.syncPrayerUI = syncPrayerUI;
@@ -1255,6 +1280,9 @@
     window.syncLedgerUI = syncLedgerUI;
     window.renderQadaUI = renderQadaUI;
     window.renderArchive = renderArchive;
+    window.injectDueTodosFromCache = injectDueTodosFromCache;
+    window.releaseDuePrayerTodos = releaseDuePrayerTodos;
+    window.releaseHabits = releaseHabits;
 
     // migrate
     if (!localStorage.getItem(KEY)) {
@@ -1262,8 +1290,10 @@
       if (old) localStorage.setItem(KEY, old);
     }
 
-    // ---- Fast path: paint from localStorage before any network ----
+    // ---- Fast path: inject from cache THEN paint (no network) ----
     const __t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    // Salah/habits from prayer-settings cache + schedule — immediate, before first paint
+    try { injectDueTodosFromCache(); } catch (e) { console.warn("cache inject failed", e); }
     render();
     setPhase("ready", workSecs());
     // Sync prayer toggles / cached times from localStorage only (no network yet)
@@ -1279,7 +1309,7 @@
     const __tPaint = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
     console.info("[todo-app] local first paint in", Math.round(__tPaint - __t0), "ms (no supabase yet)");
 
-    // Defer network-heavy prayer/habit work until after first paint
+    // Defer network-heavy prayer refresh until after first paint
     function deferAfterPaint(fn) {
       const run = () => { try { fn(); } catch (e) { console.warn(e); } };
       if (typeof requestAnimationFrame === "function") {
@@ -1288,13 +1318,11 @@
         setTimeout(run, 0);
       }
     }
-    deferAfterPaint(function bootPrayersAndHabits() {
+    deferAfterPaint(function refreshPrayerTimesAfterPaint() {
       const s = loadPrayerSettings();
-      if (s.lat != null) {
-        if (s.lastDate !== todayISO() || !s.times) fetchPrayerTimes();
-        else releaseDuePrayerTodos();
-      }
-      try { releaseHabits(); } catch (_) {}
+      if (s.lat == null) return;
+      // Background Aladhan refresh; cache already drove injection above
+      fetchPrayerTimes({ quiet: !!(s.times && s.lastDate === todayISO()) });
     });
     setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); }, 15000);
 
@@ -1406,12 +1434,12 @@
       }
 
       function applyCloudBlob(data) {
-        if (!data || !data.keys || typeof data.keys !== "object") return;
+        if (!data || !data.keys || typeof data.keys !== "object") return false;
         // Never wipe UI while applying: only write keys present in cloud blob.
         // Skip DOM refresh entirely if local already matches (avoids empty→full flash).
         const localBefore = collectLocalBlob();
         if (blobsEqual(localBefore, data)) {
-          return;
+          return false;
         }
         applyingCloud = true;
         try {
@@ -1426,10 +1454,13 @@
           applyingCloud = false;
         }
         refreshAppUI();
+        return true;
       }
 
       function refreshAppUI() {
         try {
+          // Inject before paint so cloud empty [] does not flash "No tasks yet"
+          if (typeof window.injectDueTodosFromCache === "function") window.injectDueTodosFromCache();
           if (typeof window.render === "function") window.render();
           if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
           if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
@@ -1515,18 +1546,24 @@
         setStatus("Syncing with your account…");
         try {
           const row = await fetchCloudRow(user.id);
-          const localBlob = collectLocalBlob();
           if (!row || !cloudHasData(row.data)) {
-            if (localHasData(localBlob)) {
-              await upsertCloud(user.id, localBlob);
+            // Ensure auto todos exist in local before first upload
+            try {
+              if (typeof window.injectDueTodosFromCache === "function") window.injectDueTodosFromCache();
+            } catch (_) {}
+            const afterInject = collectLocalBlob();
+            if (localHasData(afterInject)) {
+              await upsertCloud(user.id, afterInject);
               setStatus("Uploaded this device’s data to your account", "ok");
             } else {
               setStatus("Signed in — nothing to sync yet", "ok");
             }
           } else {
             lastCloudUpdatedAt = row.updated_at;
-            applyCloudBlob(row.data);
-            setStatus("Loaded data from your account", "ok");
+            const applied = !!applyCloudBlob(row.data);
+            // Status only after fetch finishes — never claim "loaded" early or when nothing changed
+            if (applied) setStatus("Loaded data from your account", "ok");
+            else setStatus("Already up to date with your account", "ok");
           }
         } catch (e) {
           console.error(e);
@@ -1535,7 +1572,11 @@
             ? "Cloud sync timed out — using this device’s data"
             : ("Cloud sync error: " + msg), "err");
         } finally {
+          // syncReady first so inject→save schedules a real cloud push (empty cloud [] must not stick)
           syncReady = true;
+          try {
+            if (typeof window.injectDueTodosFromCache === "function") window.injectDueTodosFromCache();
+          } catch (_) {}
           signedInRunning = false;
         }
       }
