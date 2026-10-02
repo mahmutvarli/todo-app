@@ -1186,7 +1186,8 @@
       renderArchive();
     };
 
-    // Non-makeup habits (e.g. brush teeth) — expire to archive, no makeup
+    // Non-makeup habits (e.g. brush teeth) — expire to archive, no makeup.
+    // Morning brush ends at today's Dhuhr; night brush ends after the next day's Fajr.
     const HABITS = [
       { id: "brush-am", text: "Brush teeth (morning)", time: "10:00", makeup: false },
       { id: "brush-pm", text: "Brush teeth (night)", time: "22:00", makeup: false }
@@ -1224,33 +1225,55 @@
         }
       }
 
-      // expire: if next habit time passed or end of day for last — move unchecked to archive as missed
-      const nextBoundary = (h) => {
-        const idx = HABITS.findIndex(x => x.id === h.id);
-        if (idx >= 0 && idx < HABITS.length - 1) return toMins(HABITS[idx + 1].time);
-        return 24 * 60;
+      // Habit windows are tied to prayer times, rather than fixed clock times:
+      // morning brush ends at today's Dhuhr, while night brush ends after the
+      // following day's Fajr. Keep an older unchecked item until its actual
+      // prayer boundary has passed, even if the app was closed in between.
+      const daysBetween = (from, to) => {
+        const a = new Date(from + "T00:00:00");
+        const b = new Date(to + "T00:00:00");
+        return Math.round((b - a) / (24 * 60 * 60 * 1000));
+      };
+      const prayerTimeToday = (name) => {
+        const s = loadPrayerSettings();
+        return s.times && s.lastDate === date && s.times[name] ? toMins(s.times[name]) : null;
+      };
+      const habitExpired = (h, itemDate) => {
+        const age = daysBetween(itemDate, date);
+        if (age < 0) return false;
+        if (h.id === "brush-am") {
+          if (age > 0) return true;
+          const dhuhr = prayerTimeToday("Dhuhr");
+          return dhuhr != null && mins >= dhuhr;
+        }
+        if (h.id === "brush-pm") {
+          // A night habit from an earlier date is definitely stale once a
+          // still-later day has begun. For yesterday, wait until today's Fajr.
+          if (age > 1) return true;
+          if (age === 1) {
+            const fajr = prayerTimeToday("Fajr");
+            return fajr != null && mins >= fajr;
+          }
+          return false;
+        }
+        return false;
       };
 
       const keep = [];
       for (const it of items) {
         if (it.kind !== "habit" || it.done) { keep.push(it); continue; }
         const h = HABITS.find(x => x.id === it.habitId);
-        if (!h) { keep.push(it); continue; }
-        const end = nextBoundary(h);
-        if (it.date === date && mins >= end) {
-          archivePrayer({
-            prayer: it.habitId,
-            text: it.text,
-            time: it.time,
-            date: it.date
-          }, "missed");
-          // mark done so not re-added
-          doneMap[date] = doneMap[date] || [];
-          if (!doneMap[date].includes(it.habitId)) doneMap[date].push(it.habitId);
-          changed = true;
-        } else {
-          keep.push(it);
-        }
+        if (!h || !habitExpired(h, it.date)) { keep.push(it); continue; }
+        archivePrayer({
+          prayer: it.habitId,
+          text: it.text,
+          time: it.time,
+          date: it.date
+        }, "missed");
+        // Mark the habit's own date so it is not re-added after expiry.
+        doneMap[it.date] = doneMap[it.date] || [];
+        if (!doneMap[it.date].includes(it.habitId)) doneMap[it.date].push(it.habitId);
+        changed = true;
       }
       if (changed) {
         localStorage.setItem(doneKey, JSON.stringify(doneMap));
