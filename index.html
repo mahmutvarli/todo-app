@@ -120,6 +120,29 @@
     .arch-item .label { font-weight: 600; }
     .arch-item .meta { font-size: 0.75rem; color: var(--muted); }
 
+    .qada-box {
+      margin-top: 16px; padding: 14px 12px; border-radius: 14px;
+      background: #0f172a; border: 1px solid #334155;
+    }
+    .qada-box h3 { font-size: 0.95rem; margin: 0 0 6px; color: var(--text); font-weight: 650; }
+    .qada-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0;
+    }
+    .qada-btn {
+      border: 1px solid #475569; background: var(--card); color: var(--text);
+      border-radius: 12px; padding: 12px 8px; cursor: pointer; font-weight: 600;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+    }
+    .qada-btn:active { border-color: var(--accent); }
+    .qada-btn .qname { font-size: 0.85rem; }
+    .qada-btn .qcount {
+      font-size: 1.1rem; font-variant-numeric: tabular-nums; color: #fb923c; min-height: 1.2em;
+    }
+    .qada-btn .qrakat { font-size: 0.7rem; color: var(--muted); font-weight: 500; }
+    .qada-btn.has-count { border-color: #fb923c; background: #1c1917; }
+    .qada-summary { font-size: 0.85rem; color: var(--muted); margin: 8px 0 12px; }
+    .qada-summary strong { color: var(--text); }
+
   </style>
 </head>
 <body>
@@ -202,7 +225,7 @@
   <section id="panel-ledger" class="panel">
     <div class="prayer-card" style="text-align:left">
       <h2 style="color:var(--text)">Salah ledger</h2>
-      <p class="status" id="ledgerHint">Enter birthday, accountability start, and optionally when you started praying (month–year). Counts farz rakats/day (Fajr 2, Dhuhr 4, Asr 4, Maghrib 3, Isha 4 = 17).</p>
+      <p class="status" id="ledgerHint">Enter birthday, accountability start, and optionally when you started praying (month–year). One day = 20 rakats (Fajr 2 + Dhuhr 4 + Asr 4 + Maghrib 3 + Isha 4 + Witr 3). Emphasized sunnah are not qada.</p>
       <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Birthday
         <input id="bday" type="date" style="margin-top:6px" />
       </label>
@@ -222,7 +245,7 @@
       </div>
       <div id="ledgerStats" style="margin-top:16px;display:none">
         <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
-        <div class="prayer-row"><span class="name">Total farz since accountability (17×days)</span><span class="time" id="statOwed">0</span></div>
+        <div class="prayer-row"><span class="name">Total owed since accountability (20×days, fard+witr)</span><span class="time" id="statOwed">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Historical debt before started praying (red)</span><span class="time" id="statHistorical" style="color:var(--danger)">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">Assumed covered since started praying (until Calculate)</span><span class="time" id="statAssumed" style="color:var(--ok)">0</span></div>
         <div class="prayer-row"><span class="name">Days assumed covered</span><span class="time" id="statAssumedDays">0</span></div>
@@ -231,13 +254,29 @@
         <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made-up rakats (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed rakats (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
         <p class="hint" style="text-align:left" id="trackingStartHint"></p>
-        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count (pays down red, including historical debt). Missing count for the active period starts only after Save &amp; calculate.</p>
+        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up or Register qada (pays down red, including historical debt). Missing count for the active period starts only after Save &amp; calculate. One day of qada = 20 rakats including witr; sunnah not counted.</p>
         <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up farz rakats
           <div class="row" style="margin-top:6px;margin-bottom:0">
             <input id="makeupCount" type="number" min="1" max="50000" value="1" />
             <button type="button" class="secondary" id="addMakeupBtn">Log make-up</button>
           </div>
         </label>
+
+        <div class="qada-box" id="qadaBox">
+          <h3>Qada (make up missed days)</h3>
+          <p class="hint" style="text-align:left;margin:0 0 4px">Tap each prayer for one day of qada. First tap = 1×, second = 2×, …. One day = 20 rakats including witr. Sunnah is not qada.</p>
+          <div class="qada-grid" id="qadaGrid"></div>
+          <p class="qada-summary" id="qadaSummary">Pending: 0 rakats · Register pays oldest red debt first.</p>
+          <div class="controls" style="justify-content:flex-start;gap:8px;flex-wrap:wrap">
+            <button type="button" class="primary" id="registerQadaBtn">Register</button>
+            <button type="button" class="secondary" id="clearQadaPendingBtn">Clear taps</button>
+          </div>
+          <div class="prayer-row" style="margin-top:12px;border-left:3px solid #fb923c;padding-left:8px">
+            <span class="name">Qada registered (in made-up / orange)</span>
+            <span class="time" id="statQadaRegistered" style="color:#fb923c">0</span>
+          </div>
+        </div>
+
       </div>
     </div>
     <p class="hint">This is a personal tracker, not a fatwa. Default puberty age is editable; set the exact accountability date and “started praying since” month if you know them.</p>
@@ -731,16 +770,31 @@
 
     // Salah ledger (birthday → owed count)
     const LEDGER_KEY = "todo-app-ledger-v1";
+    const QADA_ORDER = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha", "Witr"];
+    const QADA_RAKATS = { Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4, Witr: 3 };
+    const RAKATS_PER_DAY_LEDGER = 20; // fard 17 + witr 3
+
+    function emptyQadaPending() {
+      const o = {};
+      QADA_ORDER.forEach(n => { o[n] = 0; });
+      return o;
+    }
+
     function loadLedger() {
       try {
-        return Object.assign({
+        const raw = Object.assign({
           bday: "", puberty: "", pubertyAge: 15, startedPraying: "",
-          trackingStartedAt: "", onTime: 0, makeup: 0
+          trackingStartedAt: "", onTime: 0, makeup: 0,
+          qadaPending: emptyQadaPending(), qadaRegistered: 0
         }, JSON.parse(localStorage.getItem(LEDGER_KEY) || "{}"));
+        raw.qadaPending = Object.assign(emptyQadaPending(), raw.qadaPending || {});
+        raw.qadaRegistered = Math.max(0, raw.qadaRegistered|0);
+        return raw;
       } catch {
         return {
           bday: "", puberty: "", pubertyAge: 15, startedPraying: "",
-          trackingStartedAt: "", onTime: 0, makeup: 0
+          trackingStartedAt: "", onTime: 0, makeup: 0,
+          qadaPending: emptyQadaPending(), qadaRegistered: 0
         };
       }
     }
@@ -782,9 +836,9 @@
     }
     /**
      * Formula:
-     *   historical = days(accountability → day before startedPraying) × 17
-     *   assumed    = days(startedPraying → trackingStartedAt) × 17   // credited, not owed
-     *   liveOwed   = days(day after trackingStartedAt → today) × 17
+     *   historical = days(accountability → day before startedPraying) × 20
+     *   assumed    = days(startedPraying → trackingStartedAt) × 20   // credited, not owed
+     *   liveOwed   = days(day after trackingStartedAt → today) × 20
      *   red        = historical + liveOwed − green − orange
      * Until Save & calculate sets trackingStartedAt, assumed credits through today
      * so the started-praying span is not treated as missed.
@@ -795,7 +849,7 @@
       const today = new Date();
       const green = Math.max(0, L.onTime|0);
       const orange = Math.max(0, L.makeup|0);
-      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
+      const RAKATS_PER_DAY = RAKATS_PER_DAY_LEDGER;
       if (start > today) {
         return {
           days: 0, owed: 0, green, orange, red: 0,
@@ -911,13 +965,55 @@
           "Ledger balanced — green + orange cover historical + live missed rakats.";
       } else if (c.hasStartedPraying && c.historical > 0) {
         document.getElementById("ledgerHint").textContent =
-          c.red + " farz rakats still owed (red): historical " + c.historical +
+          c.red + " rakats still owed (red, 20/day fard+witr): historical " + c.historical +
           " + live " + c.activeOwed + " − green " + c.green + " − orange " + c.orange +
           ". Assumed covered " + c.assumed + " not counted as missed.";
       } else {
         document.getElementById("ledgerHint").textContent =
-          c.red + " farz rakats still missed / owed (red).";
+          c.red + " rakats still missed / owed (red, 20/day fard+witr).";
       }
+      renderQadaUI(L);
+    }
+
+    function pendingQadaRakats(pending) {
+      let sum = 0;
+      QADA_ORDER.forEach(n => {
+        sum += (pending[n]|0) * (QADA_RAKATS[n] || 0);
+      });
+      return sum;
+    }
+
+    function renderQadaUI(L) {
+      const pending = Object.assign(emptyQadaPending(), (L && L.qadaPending) || {});
+      const grid = document.getElementById("qadaGrid");
+      if (!grid) return;
+      grid.innerHTML = QADA_ORDER.map(name => {
+        const n = pending[name]|0;
+        const r = QADA_RAKATS[name];
+        const cls = n > 0 ? "qada-btn has-count" : "qada-btn";
+        const countLabel = n > 0 ? (n + "×") : "—";
+        return '<button type="button" class="' + cls + '" data-qada="' + name + '">' +
+          '<span class="qname">' + name + '</span>' +
+          '<span class="qcount">' + countLabel + '</span>' +
+          '<span class="qrakat">' + r + ' rakats each</span></button>';
+      }).join("");
+      grid.querySelectorAll("[data-qada]").forEach(btn => {
+        btn.onclick = () => {
+          const name = btn.getAttribute("data-qada");
+          const cur = loadLedger();
+          cur.qadaPending = Object.assign(emptyQadaPending(), cur.qadaPending || {});
+          cur.qadaPending[name] = (cur.qadaPending[name]|0) + 1;
+          saveLedger(cur);
+          renderQadaUI(cur);
+        };
+      });
+      const sum = pendingQadaRakats(pending);
+      const daysEq = (sum / RAKATS_PER_DAY_LEDGER).toFixed(sum % RAKATS_PER_DAY_LEDGER === 0 ? 0 : 2);
+      document.getElementById("qadaSummary").innerHTML =
+        "Pending: <strong>" + sum + " rakats</strong> (~" + daysEq +
+        " day" + (sum === RAKATS_PER_DAY_LEDGER ? "" : "s") +
+        "). Register adds to made-up (orange) and pays oldest red debt first.";
+      document.getElementById("statQadaRegistered").textContent = String(L.qadaRegistered|0);
     }
     document.getElementById("saveLedgerBtn").onclick = () => {
       const L = loadLedger();
@@ -942,6 +1038,32 @@
       L.makeup = (L.makeup|0) + n;
       saveLedger(L);
       syncLedgerUI();
+    };
+
+    document.getElementById("registerQadaBtn").onclick = () => {
+      const L = loadLedger();
+      L.qadaPending = Object.assign(emptyQadaPending(), L.qadaPending || {});
+      const sum = pendingQadaRakats(L.qadaPending);
+      if (sum <= 0) {
+        document.getElementById("qadaSummary").textContent =
+          "Nothing to register — tap prayers first (e.g. 1× each = 20 rakats / one day).";
+        return;
+      }
+      // Pays oldest debt first via existing formula: red = historical + live − green − orange
+      L.makeup = (L.makeup|0) + sum;
+      L.qadaRegistered = (L.qadaRegistered|0) + sum;
+      L.qadaPending = emptyQadaPending();
+      saveLedger(L);
+      syncLedgerUI();
+      document.getElementById("qadaSummary").innerHTML =
+        "Registered <strong>" + sum + " rakats</strong> into made-up (orange). Red debt reduced. Counters cleared.";
+    };
+
+    document.getElementById("clearQadaPendingBtn").onclick = () => {
+      const L = loadLedger();
+      L.qadaPending = emptyQadaPending();
+      saveLedger(L);
+      renderQadaUI(L);
     };
 
     // Patch todo check: prayer checked → onTime +1; unchecked → onTime -1
