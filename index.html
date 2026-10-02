@@ -1366,8 +1366,11 @@
           // Only mark miss once the window has closed
           if (date === today && nowMins >= nextEnd) {
             awardSalahMiss(date, it.prayer);
+            // Soft miss still needs an archive row (upgraded to late/on-time on check-off).
+            archivePrayer({ prayer: it.prayer, text: it.text, time: it.time, date }, "missed");
           } else if (date < today) {
             awardSalahMiss(date, it.prayer);
+            archivePrayer({ prayer: it.prayer, text: it.text, time: it.time, date }, "missed");
           }
         }
       } else {
@@ -1375,7 +1378,10 @@
         for (const it of items) {
           if (it.kind !== "prayer" || it.done || !SALAH_SET.has(it.prayer)) continue;
           const date = it.date || today;
-          if (date < today) awardSalahMiss(date, it.prayer);
+          if (date < today) {
+            awardSalahMiss(date, it.prayer);
+            archivePrayer({ prayer: it.prayer, text: it.text, time: it.time, date }, "missed");
+          }
         }
       }
 
@@ -1396,8 +1402,80 @@
       // archive backfill handles historical awards.
       renderVeliPoints();
     }
+    function parseVeliAwardKey(key) {
+      if (!key || typeof key !== "string") return null;
+      const m = key.match(/^(salah-ontime|salah-miss|salah-makeup|salah-unpaid|brush-ontime|brush-miss):(\d{4}-\d{2}-\d{2}):(.+)$/);
+      if (!m) return null;
+      return { type: m[1], date: m[2], prayer: m[3] };
+    }
+    function statusFromVeliAwards(awarded, date, prayer) {
+      const a = awarded || {};
+      if (isBrushId(prayer)) {
+        if (Object.prototype.hasOwnProperty.call(a, "brush-ontime:" + date + ":" + prayer)) return "on-time";
+        if (Object.prototype.hasOwnProperty.call(a, "brush-miss:" + date + ":" + prayer)) return "missed";
+        return null;
+      }
+      if (Object.prototype.hasOwnProperty.call(a, "salah-ontime:" + date + ":" + prayer)) return "on-time";
+      if (Object.prototype.hasOwnProperty.call(a, "salah-makeup:" + date + ":" + prayer)) return "late";
+      if (Object.prototype.hasOwnProperty.call(a, "salah-miss:" + date + ":" + prayer)) return "missed";
+      return null;
+    }
+    /**
+     * Repair: Veli awards (salah/brush on-time or miss) without matching archive
+     * prayer+date get an archive row. Fixes accounts where check-off awarded Veli
+     * but archive was lost (cloud overwrite race / silent save). Safe every boot.
+     */
+    function backfillArchiveFromVeli() {
+      const V = loadVeli();
+      const awarded = V.awarded || {};
+      let rows = loadArchive();
+      let changed = false;
+      const seen = new Set();
+      const nowISO = new Date().toISOString();
+      Object.keys(awarded).forEach(key => {
+        const parsed = parseVeliAwardKey(key);
+        if (!parsed) return;
+        if (parsed.type === "salah-unpaid" || parsed.type === "salah-makeup") return;
+        const sk = archiveSemanticKey(parsed.date, parsed.prayer);
+        if (seen.has(sk)) return;
+        seen.add(sk);
+        const status = statusFromVeliAwards(awarded, parsed.date, parsed.prayer);
+        if (!status) return;
+        const existing = rows.find(r => r && archiveSemanticKey(r.date || "", r.prayer) === sk);
+        if (existing) {
+          const prevRank = ARCHIVE_STATUS_RANK[existing.status] || 0;
+          const nextRank = ARCHIVE_STATUS_RANK[status] || 0;
+          if (nextRank <= prevRank) return;
+          rows = upsertArchiveRow(rows, Object.assign({}, existing, {
+            status,
+            completedAt: existing.completedAt || (status === "on-time" ? parsed.date + "T12:00:00.000Z" : nowISO),
+            rakats: existing.rakats != null ? existing.rakats : (({ Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 })[parsed.prayer] || 0)
+          }));
+          changed = true;
+          return;
+        }
+        const label = isBrushId(parsed.prayer)
+          ? (parsed.prayer === "brush-am" ? "Brush teeth (morning)" : "Brush teeth (night)")
+          : ("Salah · " + parsed.prayer);
+        const time = parsed.prayer === "brush-am" ? "10:00" : (parsed.prayer === "brush-pm" ? "22:00" : "");
+        rows = upsertArchiveRow(rows, {
+          id: "bf-" + parsed.date + "-" + parsed.prayer + "-" + Math.random().toString(36).slice(2, 7),
+          prayer: parsed.prayer,
+          text: label,
+          time,
+          date: parsed.date,
+          completedAt: status === "on-time" ? parsed.date + "T12:00:00.000Z" : nowISO,
+          status,
+          rakats: ({ Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 })[parsed.prayer] || 0
+        });
+        changed = true;
+      });
+      if (changed) saveArchive(rows);
+      return changed;
+    }
     function backfillVeliFromArchive() {
-      // One-pass idempotent awards from existing archive rows (safe on every boot).
+      // Repair archive gaps from Veli first, then award any archive rows still missing Veli.
+      try { backfillArchiveFromVeli(); } catch (e) { console.warn("archive←veli backfill failed", e); }
       loadArchive().forEach(awardVeliForArchive);
       syncVeliPrayerMisses();
       renderVeliPoints();
@@ -1422,21 +1500,55 @@
       return "on-time";
     }
 
-    function archivePrayer(item, status) {
-      const rows = loadArchive();
+    const ARCHIVE_STATUS_RANK = { missed: 1, late: 2, "on-time": 3 };
+    function archiveSemanticKey(date, prayer) {
+      return String(date || "") + "\0" + String(prayer || "");
+    }
+    /** Upsert by (date, prayer). Every check-off / miss must land an archive row. */
+    function upsertArchiveRow(rows, row) {
+      const src = Array.isArray(rows) ? rows : [];
+      if (!row || !row.prayer) return src;
+      const key = archiveSemanticKey(row.date || "", row.prayer);
+      const idx = src.findIndex(r => r && archiveSemanticKey(r.date || "", r.prayer) === key);
+      if (idx < 0) return [row].concat(src);
+      const prev = src[idx];
+      const prevRank = ARCHIVE_STATUS_RANK[prev.status] || 0;
+      const nextRank = ARCHIVE_STATUS_RANK[row.status] || 0;
+      // Same/lower rank: return original ref so soft-miss interval does not churn.
+      if (nextRank <= prevRank) return src;
+      const list = src.slice();
+      list[idx] = Object.assign({}, prev, row, { id: prev.id || row.id });
+      list.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+      return list;
+    }
+    function archivePrayer(item, status, completedAt) {
+      if (!item || !item.prayer) return null;
+      const date = item.date || todayISO();
+      const st = status || "on-time";
       const row = {
         id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
         prayer: item.prayer,
-        text: item.text,
-        time: item.time,
-        date: item.date || todayISO(),
-        completedAt: new Date().toISOString(),
-        status: status || "on-time",
+        text: item.text || (item.prayer.indexOf("brush") === 0 ? item.prayer : ("Salah · " + item.prayer)),
+        time: item.time || "",
+        date,
+        completedAt: completedAt || new Date().toISOString(),
+        status: st,
         rakats: ({ Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 })[item.prayer] || 0
       };
-      rows.unshift(row);
-      saveArchive(rows);
+      try {
+        const prev = loadArchive();
+        const rows = upsertArchiveRow(prev, row);
+        if (rows !== prev) saveArchive(rows);
+      } catch (e) {
+        console.warn("archive save failed", e);
+        try {
+          const fallback = loadArchive();
+          fallback.unshift(row);
+          saveArchive(fallback);
+        } catch (e2) { console.warn("archive fallback failed", e2); }
+      }
       try { awardVeliForArchive(row); } catch (e) { console.warn("veli award failed", e); }
+      return row;
     }
 
     function renderArchive() {
@@ -1596,6 +1708,8 @@
     window.renderArchive = renderArchive;
     window.renderVeliPoints = renderVeliPoints;
     window.syncVeliPrayerMisses = syncVeliPrayerMisses;
+    window.backfillArchiveFromVeli = backfillArchiveFromVeli;
+    window.archivePrayer = archivePrayer;
     window.injectDueTodosFromCache = injectDueTodosFromCache;
     window.releaseDuePrayerTodos = releaseDuePrayerTodos;
     window.releaseHabits = releaseHabits;
@@ -1835,7 +1949,22 @@
               localA.forEach(r => { if (r && r.id) byId.set(r.id, r); });
               const extras = [];
               [...cloudA, ...localA].forEach(r => { if (r && !r.id) extras.push(r); });
-              const rows = [...byId.values(), ...extras];
+              let rows = [...byId.values(), ...extras];
+              // Dedupe by date+prayer so semantic rows survive id drift across devices
+              const best = new Map();
+              const noPrayer = [];
+              rows.forEach(r => {
+                if (!r) return;
+                if (!r.prayer) { noPrayer.push(r); return; }
+                const key = archiveSemanticKey(r.date || "", r.prayer);
+                const prev = best.get(key);
+                if (!prev) { best.set(key, r); return; }
+                const prevRank = ARCHIVE_STATUS_RANK[prev.status] || 0;
+                const nextRank = ARCHIVE_STATUS_RANK[r.status] || 0;
+                if (nextRank > prevRank) best.set(key, r);
+                else if (nextRank === prevRank && String(r.completedAt || "") > String(prev.completedAt || "")) best.set(key, r);
+              });
+              rows = [...best.values(), ...noPrayer];
               rows.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
               localStorage.setItem(k, JSON.stringify(rows));
               continue;
@@ -1879,6 +2008,7 @@
           if (typeof window.render === "function") window.render();
           if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
           if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
+          if (typeof window.backfillArchiveFromVeli === "function") window.backfillArchiveFromVeli();
           if (typeof window.renderArchive === "function") window.renderArchive();
           if (typeof window.syncVeliPrayerMisses === "function") window.syncVeliPrayerMisses();
           if (typeof window.renderVeliPoints === "function") window.renderVeliPoints();

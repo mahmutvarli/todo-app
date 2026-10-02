@@ -283,7 +283,7 @@ export function parseArchive(raw) {
   }
 }
 
-/** Union archive rows by id; local row wins on conflict; newest completedAt first. */
+/** Union archive rows by id; local row wins on conflict; then dedupe by date+prayer. */
 export function mergeArchives(localRaw, cloudRaw) {
   const local = parseArchive(localRaw);
   const cloud = parseArchive(cloudRaw);
@@ -294,14 +294,39 @@ export function mergeArchives(localRaw, cloudRaw) {
   for (const row of local) {
     if (row && row.id) byId.set(row.id, row);
   }
-  // Rows without id: keep both (rare)
   const extras = [];
   for (const row of [...cloud, ...local]) {
     if (row && !row.id) extras.push(row);
   }
   const rows = [...byId.values(), ...extras];
-  rows.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
-  return rows;
+  const rank = { missed: 1, late: 2, "on-time": 3 };
+  const best = new Map();
+  const noPrayer = [];
+  for (const row of rows) {
+    if (!row) continue;
+    if (!row.prayer) {
+      noPrayer.push(row);
+      continue;
+    }
+    const key = String(row.date || "") + "\0" + String(row.prayer || "");
+    const prev = best.get(key);
+    if (!prev) {
+      best.set(key, row);
+      continue;
+    }
+    const prevRank = rank[prev.status] || 0;
+    const nextRank = rank[row.status] || 0;
+    if (nextRank > prevRank) best.set(key, row);
+    else if (
+      nextRank === prevRank &&
+      String(row.completedAt || "") > String(prev.completedAt || "")
+    ) {
+      best.set(key, row);
+    }
+  }
+  const out = [...best.values(), ...noPrayer];
+  out.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+  return out;
 }
 
 /**
@@ -518,4 +543,214 @@ export function awardVeliPure(state, key, delta) {
   awarded[key] = delta;
   const total = (state.total | 0) + delta;
   return { awarded, total, applied: true };
+}
+
+export const FARZ_RAKATS = { Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 };
+export const ARCHIVE_STATUS_RANK = { missed: 1, late: 2, "on-time": 3 };
+
+export function archiveSemanticKey(date, prayer) {
+  return String(date || "") + "\0" + String(prayer || "");
+}
+
+/**
+ * Upsert archive row by (date, prayer). Higher status rank wins; same rank prefers
+ * incoming when it has a newer completedAt (or when existing has none).
+ */
+export function upsertArchiveRow(rows, row) {
+  const src = Array.isArray(rows) ? rows : [];
+  if (!row || !row.prayer) return src;
+  const date = row.date || "";
+  const key = archiveSemanticKey(date, row.prayer);
+  const idx = src.findIndex(
+    (r) => r && archiveSemanticKey(r.date || "", r.prayer) === key
+  );
+  if (idx < 0) {
+    return [row, ...src];
+  }
+  const prev = src[idx];
+  const prevRank = ARCHIVE_STATUS_RANK[prev.status] || 0;
+  const nextRank = ARCHIVE_STATUS_RANK[row.status] || 0;
+  // Same or lower rank: return original ref (soft-miss polling must not churn).
+  if (nextRank <= prevRank) return src;
+  const list = [...src];
+  list[idx] = { ...prev, ...row, id: prev.id || row.id };
+  list.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+  return list;
+}
+
+/** Dedupe archive by (date, prayer) after id-union, keeping higher-ranked status. */
+export function dedupeArchiveByPrayerDate(rows) {
+  const best = new Map();
+  for (const row of rows || []) {
+    if (!row || !row.prayer) continue;
+    const key = archiveSemanticKey(row.date || "", row.prayer);
+    const prev = best.get(key);
+    if (!prev) {
+      best.set(key, row);
+      continue;
+    }
+    const prevRank = ARCHIVE_STATUS_RANK[prev.status] || 0;
+    const nextRank = ARCHIVE_STATUS_RANK[row.status] || 0;
+    if (nextRank > prevRank) best.set(key, row);
+    else if (nextRank === prevRank) {
+      if (String(row.completedAt || "") > String(prev.completedAt || "")) best.set(key, row);
+    }
+  }
+  const out = [...best.values()];
+  out.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+  return out;
+}
+
+/** Alias — mergeArchives already semantic-dedupes by date+prayer. */
+export function mergeArchivesDeduped(localRaw, cloudRaw) {
+  return mergeArchives(localRaw, cloudRaw);
+}
+
+/**
+ * Parse award key like "salah-ontime:2026-10-02:Dhuhr" → { type, date, prayer }.
+ * Types: salah-ontime | salah-miss | salah-makeup | salah-unpaid | brush-ontime | brush-miss
+ */
+export function parseVeliAwardKey(key) {
+  if (!key || typeof key !== "string") return null;
+  const m = key.match(/^(salah-ontime|salah-miss|salah-makeup|salah-unpaid|brush-ontime|brush-miss):(\d{4}-\d{2}-\d{2}):(.+)$/);
+  if (!m) return null;
+  return { type: m[1], date: m[2], prayer: m[3] };
+}
+
+function defaultLabelForArchive(prayer) {
+  if (prayer === "brush-am") return "Brush teeth (morning)";
+  if (prayer === "brush-pm") return "Brush teeth (night)";
+  if (PRAYER_NAMES.includes(prayer)) return "Salah · " + prayer;
+  return String(prayer);
+}
+
+function defaultTimeForArchive(prayer) {
+  if (prayer === "brush-am") return "10:00";
+  if (prayer === "brush-pm") return "22:00";
+  return "";
+}
+
+function middayISO(date) {
+  return date + "T12:00:00.000Z";
+}
+
+/**
+ * Infer archive status for a prayer+date from the Veli awarded map.
+ * on-time > late (miss+makeup) > missed.
+ */
+export function statusFromVeliAwards(awarded, date, prayer) {
+  const a = awarded || {};
+  const isBrush = prayer === "brush-am" || prayer === "brush-pm";
+  if (isBrush) {
+    if (Object.prototype.hasOwnProperty.call(a, "brush-ontime:" + date + ":" + prayer)) return "on-time";
+    if (Object.prototype.hasOwnProperty.call(a, "brush-miss:" + date + ":" + prayer)) return "missed";
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(a, "salah-ontime:" + date + ":" + prayer)) return "on-time";
+  if (Object.prototype.hasOwnProperty.call(a, "salah-makeup:" + date + ":" + prayer)) return "late";
+  if (Object.prototype.hasOwnProperty.call(a, "salah-miss:" + date + ":" + prayer)) return "missed";
+  return null;
+}
+
+/**
+ * One-time / every-boot repair: for each salah-ontime/miss or brush-ontime/miss
+ * award without a matching archive prayer+date, insert an archive entry.
+ * Returns { rows, inserted } where inserted is the list of new/upgraded rows.
+ */
+export function backfillArchiveFromVeli(archiveRows, veliState, opts) {
+  const nowISO = (opts && opts.nowISO) || new Date().toISOString();
+  const awarded = (veliState && veliState.awarded) || {};
+  let rows = Array.isArray(archiveRows) ? [...archiveRows] : [];
+  const inserted = [];
+  const seen = new Set();
+
+  for (const key of Object.keys(awarded)) {
+    const parsed = parseVeliAwardKey(key);
+    if (!parsed) continue;
+    // unpaid is a day-end penalty on top of miss — do not create archive from it alone
+    if (parsed.type === "salah-unpaid") continue;
+    // makeup alone implies late; ontime/miss drive primary status
+    if (parsed.type === "salah-makeup") continue;
+
+    const { date, prayer } = parsed;
+    const sk = archiveSemanticKey(date, prayer);
+    if (seen.has(sk)) continue;
+    seen.add(sk);
+
+    const status = statusFromVeliAwards(awarded, date, prayer);
+    if (!status) continue;
+
+    const existing = rows.find(
+      (r) => r && archiveSemanticKey(r.date || "", r.prayer) === sk
+    );
+    if (existing) {
+      // Upgrade missed → late/on-time if Veli says so
+      const prevRank = ARCHIVE_STATUS_RANK[existing.status] || 0;
+      const nextRank = ARCHIVE_STATUS_RANK[status] || 0;
+      if (nextRank <= prevRank) continue;
+      const upgraded = {
+        ...existing,
+        status,
+        completedAt: existing.completedAt || (status === "on-time" ? middayISO(date) : nowISO),
+        rakats: existing.rakats != null ? existing.rakats : FARZ_RAKATS[prayer] || 0,
+        text: existing.text || defaultLabelForArchive(prayer),
+        time: existing.time || defaultTimeForArchive(prayer),
+      };
+      rows = upsertArchiveRow(rows, upgraded);
+      inserted.push(upgraded);
+      continue;
+    }
+
+    const row = {
+      id: "bf-" + date + "-" + prayer + "-" + Math.random().toString(36).slice(2, 7),
+      prayer,
+      text: defaultLabelForArchive(prayer),
+      time: defaultTimeForArchive(prayer),
+      date,
+      completedAt: status === "on-time" ? middayISO(date) : nowISO,
+      status,
+      rakats: FARZ_RAKATS[prayer] || 0,
+    };
+    rows = upsertArchiveRow(rows, row);
+    inserted.push(row);
+  }
+
+  return { rows: dedupeArchiveByPrayerDate(rows), inserted };
+}
+
+/**
+ * Pure check-off side-effect bundle: always produces an archive row + done map update.
+ * Caller persists. status should be on-time | late | missed.
+ */
+export function checkOffWithArchive(items, doneMap, index, { kind, status, completedAt, idFactory }) {
+  const it = items[index];
+  if (!it) return { items, doneMap, archived: null };
+  const date = it.date;
+  const prayerOrHabit = kind === "habit" ? it.habitId : it.prayer;
+  if (!date || !prayerOrHabit) {
+    return {
+      items: items.filter((_, i) => i !== index),
+      doneMap,
+      archived: null,
+    };
+  }
+  const mkId =
+    idFactory ||
+    (() => Date.now() + "-" + Math.random().toString(36).slice(2, 7));
+  const row = {
+    id: mkId(),
+    prayer: prayerOrHabit,
+    text: it.text,
+    time: it.time,
+    date,
+    completedAt: completedAt || new Date().toISOString(),
+    status: status || "on-time",
+    rakats: FARZ_RAKATS[prayerOrHabit] || 0,
+  };
+  const nextDone = recordDone(doneMap, date, prayerOrHabit);
+  return {
+    items: items.filter((_, i) => i !== index),
+    doneMap: nextDone,
+    archived: row,
+  };
 }

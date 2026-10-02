@@ -39,6 +39,12 @@ import {
   awardVeliPure,
   recordDone,
   HABIT_DEFS,
+  upsertArchiveRow,
+  backfillArchiveFromVeli,
+  parseVeliAwardKey,
+  statusFromVeliAwards,
+  checkOffWithArchive,
+  FARZ_RAKATS,
 } from "./todo-logic.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -390,6 +396,86 @@ console.log("\n=== 6) index.html wiring ===");
     HABIT_DEFS.some((h) => h.id === "brush-am") && HABIT_DEFS.some((h) => h.id === "brush-pm"),
     "habit defs include brush-am/pm"
   );
+}
+
+
+console.log("\n=== 6) Archive always on check-off/miss; Veli→archive backfill ===");
+{
+  // Pure check-off always yields archive row
+  const items = [
+    { text: "Salah · Dhuhr", done: false, kind: "prayer", prayer: "Dhuhr", time: "13:00", date: DATE },
+  ];
+  const off = checkOffWithArchive(items, {}, 0, {
+    kind: "prayer",
+    status: "on-time",
+    completedAt: DATE + "T13:30:00.000Z",
+    idFactory: () => "arch-dhuhr-1",
+  });
+  assert(off.archived && off.archived.prayer === "Dhuhr", "check-off produces archive row");
+  assert(off.archived.status === "on-time", "check-off archive status on-time");
+  assert(off.archived.rakats === FARZ_RAKATS.Dhuhr, "check-off archive rakats=4 for Dhuhr");
+  assert(isDone(off.doneMap, DATE, "Dhuhr"), "check-off records prayer-done");
+  assert(off.items.length === 0, "check-off removes todo");
+
+  // Upsert by date+prayer: miss then late upgrades; same status no churn
+  let rows = [];
+  rows = upsertArchiveRow(rows, {
+    id: "1", prayer: "Asr", date: DATE, status: "missed", completedAt: DATE + "T17:00:00Z", rakats: 4,
+  });
+  assert(rows.length === 1 && rows[0].status === "missed", "upsert inserts miss");
+  rows = upsertArchiveRow(rows, {
+    id: "2", prayer: "Asr", date: DATE, status: "missed", completedAt: DATE + "T17:05:00Z", rakats: 4,
+  });
+  assert(rows.length === 1 && rows[0].id === "1", "same-status upsert does not churn id/completedAt");
+  rows = upsertArchiveRow(rows, {
+    id: "3", prayer: "Asr", date: DATE, status: "late", completedAt: DATE + "T18:00:00Z", rakats: 4,
+  });
+  assert(rows[0].status === "late" && rows[0].id === "1", "miss upgrades to late, keeps id");
+
+  // Reproduce cloud bug: Veli has Dhuhr on-time + brush miss, archive lacks them → backfill
+  const brokenArchive = [
+    { id: "a-fajr", prayer: "Fajr", date: DATE, status: "on-time", completedAt: DATE + "T04:04:00Z", rakats: 2, text: "Salah · Fajr" },
+    { id: "a-bpm", prayer: "brush-pm", date: "2026-10-01", status: "on-time", completedAt: "2026-10-02T04:09:00Z", rakats: 0 },
+  ];
+  const veli = {
+    total: 3,
+    awarded: {
+      "salah-ontime:2026-10-02:Fajr": 2,
+      "salah-ontime:2026-10-02:Dhuhr": 2,
+      "brush-miss:2026-10-02:brush-am": -1,
+      "brush-ontime:2026-10-01:brush-pm": 1,
+      "brush-miss:2026-10-01:brush-am": -1,
+    },
+  };
+  const bf = backfillArchiveFromVeli(brokenArchive, veli, { nowISO: DATE + "T15:00:00.000Z" });
+  assert(bf.inserted.length >= 2, "backfill inserts missing Dhuhr + brush-am");
+  assert(
+    bf.rows.some((r) => r.prayer === "Dhuhr" && r.date === DATE && r.status === "on-time" && r.rakats === 4),
+    "backfill adds Dhuhr on-time 4 rakats"
+  );
+  assert(
+    bf.rows.some((r) => r.prayer === "brush-am" && r.date === DATE && r.status === "missed"),
+    "backfill adds brush-am miss for today"
+  );
+  assert(
+    bf.rows.some((r) => r.prayer === "Fajr" && r.date === DATE),
+    "backfill keeps existing Fajr"
+  );
+  // Idempotent second pass
+  const bf2 = backfillArchiveFromVeli(bf.rows, veli, { nowISO: DATE + "T16:00:00.000Z" });
+  assert(bf2.inserted.length === 0, "second backfill is no-op");
+
+  assert(parseVeliAwardKey("salah-ontime:2026-10-02:Dhuhr").prayer === "Dhuhr", "parse veli key");
+  assert(statusFromVeliAwards(veli.awarded, DATE, "Dhuhr") === "on-time", "status from veli on-time");
+  assert(statusFromVeliAwards(veli.awarded, DATE, "brush-am") === "missed", "status from veli brush miss");
+
+  // index.html wiring: check-off calls archivePrayer; boot backfills archive from veli
+  assertIncludes(indexHtml, "backfillArchiveFromVeli", "index has archive←veli backfill");
+  assertIncludes(indexHtml, "upsertArchiveRow", "index upserts archive by date+prayer");
+  assertIncludes(indexHtml, "archivePrayer(items[i], st)", "salah check-off still calls archivePrayer");
+  assertIncludes(indexHtml, 'archivePrayer({\n              prayer: items[i].habitId', "habit check-off calls archivePrayer");
+  // Soft miss archives too
+  assertIncludes(indexHtml, 'archivePrayer({ prayer: it.prayer, text: it.text, time: it.time, date }, "missed")', "soft miss creates archive");
 }
 
 console.log(`\nSmoke result: ${passed} passed, ${failed} failed`);
