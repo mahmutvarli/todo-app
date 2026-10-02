@@ -1046,6 +1046,14 @@
         document.getElementById("ledgerHint").textContent = "Enter birthday or an accountability start date.";
         return;
       }
+      if (!confirm("Save & calculate will reset the on-time (green) and made-up (orange) rakat counters to 0 and start/refresh tracking from today. Historical debt stays. Continue?")) return;
+
+      // A new calculation starts a fresh live counter while preserving the
+      // user's dates and the derived historical debt.
+      L.onTime = 0;
+      L.makeup = 0;
+      L.qadaRegistered = 0;
+      L.qadaPending = emptyQadaPending();
       // Refresh tracking start to today on each Save & calculate so the past
       // since startedPraying is credited once as assumed already prayed.
       L.trackingStartedAt = todayISO();
