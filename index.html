@@ -254,13 +254,7 @@
         <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made-up rakats (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed rakats (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
         <p class="hint" style="text-align:left" id="trackingStartHint"></p>
-        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up or Register qada (pays down red, including historical debt). Missing count for the active period starts only after Save &amp; calculate. One day of qada = 20 rakats including witr; sunnah not counted.</p>
-        <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up farz rakats
-          <div class="row" style="margin-top:6px;margin-bottom:0">
-            <input id="makeupCount" type="number" min="1" max="50000" value="1" />
-            <button type="button" class="secondary" id="addMakeupBtn">Log make-up</button>
-          </div>
-        </label>
+        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Register qada to pay down red debt, including historical debt. Missing count for the active period starts only after Save &amp; calculate. One day of qada = 20 rakats including witr; sunnah not counted.</p>
 
         <div class="qada-box" id="qadaBox">
           <h3>Qada (make up missed days)</h3>
@@ -1032,14 +1026,6 @@
       saveLedger(L);
       syncLedgerUI();
     };
-    document.getElementById("addMakeupBtn").onclick = () => {
-      const L = loadLedger();
-      const n = Math.max(1, Number(document.getElementById("makeupCount").value) || 1);
-      L.makeup = (L.makeup|0) + n;
-      saveLedger(L);
-      syncLedgerUI();
-    };
-
     document.getElementById("registerQadaBtn").onclick = () => {
       const L = loadLedger();
       L.qadaPending = Object.assign(emptyQadaPending(), L.qadaPending || {});
