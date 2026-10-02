@@ -30,7 +30,14 @@
       color: var(--text);
       padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
     }
-    h1 { font-size: 1.25rem; margin: 0 0 12px; font-weight: 650; }
+    h1 { font-size: 1.25rem; margin: 0; font-weight: 650; }
+    .app-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+    .veli-badge {
+      flex-shrink: 0; font-size: 0.82rem; font-weight: 650; white-space: nowrap;
+      background: #1e1b4b; color: var(--prayer); border: 1px solid #5b21b6;
+      border-radius: 999px; padding: 6px 12px; font-variant-numeric: tabular-nums;
+    }
+    .veli-badge .veli-num { color: var(--text); margin-left: 4px; }
     h2 { font-size: 0.95rem; margin: 0 0 10px; font-weight: 600; color: var(--muted); }
     .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
     .tabs button {
@@ -160,7 +167,10 @@
   </style>
 </head>
 <body>
-  <h1>Todo + Tabata + Prayers</h1>
+  <div class="app-header">
+    <h1>Todo + Tabata + Prayers</h1>
+    <div class="veli-badge" id="veliBadge" title="Veli points">Veli points<span class="veli-num" id="veliTotal">0</span></div>
+  </div>
   <div class="auth-bar" id="authBar">
     <div class="auth-info">
       <span id="authEmail" class="auth-email" hidden></span>
@@ -270,6 +280,7 @@
         <button type="button" class="primary" id="saveLedgerBtn">Save &amp; calculate</button>
       </div>
       <div id="ledgerStats" style="margin-top:16px;display:none">
+        <div class="prayer-row" style="border-left:3px solid var(--prayer);padding-left:8px"><span class="name">Veli points</span><span class="time" id="statVeli" style="color:var(--prayer)">0</span></div>
         <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
         <div class="prayer-row"><span class="name">Total owed since accountability (20×days, fard+witr)</span><span class="time" id="statOwed">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Historical debt before started praying (red)</span><span class="time" id="statHistorical" style="color:var(--danger)">0</span></div>
@@ -1013,6 +1024,7 @@
           c.red + " rakats still missed / owed (red, 20/day fard+witr).";
       }
       renderQadaUI(L);
+      renderVeliPoints();
     }
 
     function pendingQadaRakats(pending) {
@@ -1117,6 +1129,171 @@
     }
     function saveArchive(rows) { localStorage.setItem(ARCHIVE_KEY, JSON.stringify(rows)); }
 
+    // ---- Veli points ----
+    // Salah: on-time +2; miss −1; same-day makeup +1; later makeup 0; unpaid after prayer day −9.
+    // Brush: on-time +1; missed −1. Idempotent via awarded keys (no re-award on refresh).
+    const VELI_KEY = "todo-app-veli-points-v1";
+    const SALAH_SET = new Set(PRAYER_NAMES);
+    function isBrushId(id) { return id === "brush-am" || id === "brush-pm"; }
+    function loadVeli() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(VELI_KEY) || "{}");
+        return {
+          total: raw.total|0,
+          awarded: (raw.awarded && typeof raw.awarded === "object") ? raw.awarded : {}
+        };
+      } catch {
+        return { total: 0, awarded: {} };
+      }
+    }
+    function saveVeli(V) { localStorage.setItem(VELI_KEY, JSON.stringify(V)); }
+    function awardVeli(key, delta) {
+      if (!key || !delta) return false;
+      const V = loadVeli();
+      if (Object.prototype.hasOwnProperty.call(V.awarded, key)) return false;
+      V.awarded[key] = delta;
+      V.total = (V.total|0) + delta;
+      saveVeli(V);
+      renderVeliPoints();
+      return true;
+    }
+    function renderVeliPoints() {
+      const V = loadVeli();
+      const n = V.total|0;
+      const el = document.getElementById("veliTotal");
+      if (el) el.textContent = String(n);
+      const stat = document.getElementById("statVeli");
+      if (stat) stat.textContent = String(n);
+    }
+    function isoDateFrom(isoOrDate) {
+      if (!isoOrDate) return todayISO();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(isoOrDate)) return isoOrDate;
+      try {
+        const d = new Date(isoOrDate);
+        if (isNaN(d.getTime())) return todayISO();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return y + "-" + m + "-" + day;
+      } catch { return todayISO(); }
+    }
+    function veliHas(prefixKeys) {
+      const V = loadVeli();
+      return prefixKeys.some(k => Object.prototype.hasOwnProperty.call(V.awarded, k));
+    }
+    function awardSalahMiss(date, prayer) {
+      return awardVeli("salah-miss:" + date + ":" + prayer, -1);
+    }
+    function awardSalahMakeup(date, prayer, sameDay) {
+      const key = "salah-makeup:" + date + ":" + prayer;
+      // Later makeup is 0 — still record so we don't treat as unpaid forever wrongly,
+      // and so we never double-apply. Delta 0 uses a sentinel stored via direct write.
+      if (sameDay) return awardVeli(key, 1);
+      const V = loadVeli();
+      if (Object.prototype.hasOwnProperty.call(V.awarded, key)) return false;
+      V.awarded[key] = 0;
+      saveVeli(V);
+      return true;
+    }
+    function awardSalahUnpaid(date, prayer) {
+      // −9 once when miss finalized after prayer day ends without makeup. Do not double with −1.
+      return awardVeli("salah-unpaid:" + date + ":" + prayer, -9);
+    }
+    function awardVeliForArchive(row) {
+      if (!row || !row.prayer) return;
+      const date = row.date || todayISO();
+      const prayer = row.prayer;
+      const status = row.status || "on-time";
+      const completedDay = isoDateFrom(row.completedAt);
+
+      if (isBrushId(prayer)) {
+        if (status === "on-time") awardVeli("brush-ontime:" + date + ":" + prayer, 1);
+        else if (status === "missed") awardVeli("brush-miss:" + date + ":" + prayer, -1);
+        return;
+      }
+
+      if (!SALAH_SET.has(prayer)) return;
+
+      if (status === "on-time") {
+        awardVeli("salah-ontime:" + date + ":" + prayer, 2);
+        return;
+      }
+      if (status === "missed") {
+        awardSalahMiss(date, prayer);
+        // If the miss is already past the prayer day, finalize unpaid immediately.
+        if (todayISO() > date && !veliHas(["salah-ontime:" + date + ":" + prayer, "salah-makeup:" + date + ":" + prayer])) {
+          awardSalahUnpaid(date, prayer);
+        }
+        return;
+      }
+      if (status === "late") {
+        // Missed the timely window (−1), then makeup: +1 same calendar day, else 0.
+        awardSalahMiss(date, prayer);
+        awardSalahMakeup(date, prayer, completedDay === date);
+        return;
+      }
+    }
+    /**
+     * Soft miss: when a salah window has ended and the todo is still open, award −1.
+     * Does not remove the todo (user can still make it up).
+     * Day rollover: if prayer date has ended without makeup/on-time → additional −9 once.
+     */
+    function syncVeliPrayerMisses() {
+      const today = todayISO();
+      const s = loadPrayerSettings();
+      const items = load();
+
+      // Window-end miss for today's open salah todos
+      if (s.times && s.lastDate === today) {
+        const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+        for (const it of items) {
+          if (it.kind !== "prayer" || it.done || !SALAH_SET.has(it.prayer)) continue;
+          const date = it.date || today;
+          const idx = PRAYER_NAMES.indexOf(it.prayer);
+          let nextEnd = 24 * 60;
+          if (idx >= 0 && idx < PRAYER_NAMES.length - 1) {
+            nextEnd = toMins(s.times[PRAYER_NAMES[idx + 1]]);
+          }
+          // Only mark miss once the window has closed
+          if (date === today && nowMins >= nextEnd) {
+            awardSalahMiss(date, it.prayer);
+          } else if (date < today) {
+            awardSalahMiss(date, it.prayer);
+          }
+        }
+      } else {
+        // No times / new day: any leftover prayer todos from prior dates are misses
+        for (const it of items) {
+          if (it.kind !== "prayer" || it.done || !SALAH_SET.has(it.prayer)) continue;
+          const date = it.date || today;
+          if (date < today) awardSalahMiss(date, it.prayer);
+        }
+      }
+
+      // Finalize unpaid (−9) for any miss whose prayer day has ended without on-time/makeup
+      const V = loadVeli();
+      Object.keys(V.awarded).forEach(k => {
+        if (!k.startsWith("salah-miss:")) return;
+        const parts = k.split(":");
+        if (parts.length < 3) return;
+        const date = parts[1];
+        const prayer = parts.slice(2).join(":");
+        if (today <= date) return; // prayer day not over yet
+        if (veliHas(["salah-ontime:" + date + ":" + prayer, "salah-makeup:" + date + ":" + prayer])) return;
+        awardSalahUnpaid(date, prayer);
+      });
+
+      // Also: prayers marked done late/on-time in doneMap shouldn't get unpaid;
+      // archive backfill handles historical awards.
+      renderVeliPoints();
+    }
+    function backfillVeliFromArchive() {
+      // One-pass idempotent awards from existing archive rows (safe on every boot).
+      loadArchive().forEach(awardVeliForArchive);
+      syncVeliPrayerMisses();
+      renderVeliPoints();
+    }
+
     /** on-time if completed at or before next athan (or end of day for Isha). */
     function completionStatus(prayer, athanTime, completedAt) {
       const s = loadPrayerSettings();
@@ -1138,7 +1315,7 @@
 
     function archivePrayer(item, status) {
       const rows = loadArchive();
-      rows.unshift({
+      const row = {
         id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
         prayer: item.prayer,
         text: item.text,
@@ -1147,8 +1324,10 @@
         completedAt: new Date().toISOString(),
         status: status || "on-time",
         rakats: ({ Fajr: 2, Dhuhr: 4, Asr: 4, Maghrib: 3, Isha: 4 })[item.prayer] || 0
-      });
+      };
+      rows.unshift(row);
       saveArchive(rows);
+      try { awardVeliForArchive(row); } catch (e) { console.warn("veli award failed", e); }
     }
 
     function renderArchive() {
@@ -1303,6 +1482,8 @@
     window.syncLedgerUI = syncLedgerUI;
     window.renderQadaUI = renderQadaUI;
     window.renderArchive = renderArchive;
+    window.renderVeliPoints = renderVeliPoints;
+    window.syncVeliPrayerMisses = syncVeliPrayerMisses;
     window.injectDueTodosFromCache = injectDueTodosFromCache;
     window.releaseDuePrayerTodos = releaseDuePrayerTodos;
     window.releaseHabits = releaseHabits;
@@ -1317,7 +1498,9 @@
     const __t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
     // Salah/habits from prayer-settings cache + schedule — immediate, before first paint
     try { injectDueTodosFromCache(); } catch (e) { console.warn("cache inject failed", e); }
+    try { backfillVeliFromArchive(); } catch (e) { console.warn("veli backfill failed", e); }
     render();
+    renderVeliPoints();
     setPhase("ready", workSecs());
     // Sync prayer toggles / cached times from localStorage only (no network yet)
     (function paintPrayerLocal() {
@@ -1347,7 +1530,7 @@
       // Background Aladhan refresh; cache already drove injection above
       fetchPrayerTimes({ quiet: !!(s.times && s.lastDate === todayISO()) });
     });
-    setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); }, 15000);
+    setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); syncVeliPrayerMisses(); }, 15000);
 
     // ---- Cloud sync: load local UMD after first paint (zero block on refresh) ----
     deferAfterPaint(function loadSupabaseAfterPaint() {
@@ -1391,6 +1574,7 @@
         "todo-app-athan-notified",
         "todo-app-ledger-v1",
         "todo-app-archive-v1",
+        "todo-app-veli-points-v1",
       ];
 
       const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -1488,6 +1672,8 @@
           if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
           if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
           if (typeof window.renderArchive === "function") window.renderArchive();
+          if (typeof window.syncVeliPrayerMisses === "function") window.syncVeliPrayerMisses();
+          if (typeof window.renderVeliPoints === "function") window.renderVeliPoints();
           if (typeof window.renderQadaUI === "function") {
             const L = typeof window.loadLedger === "function" ? window.loadLedger() : null;
             if (L) window.renderQadaUI(L);
