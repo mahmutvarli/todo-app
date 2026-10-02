@@ -215,19 +215,23 @@
       <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Started praying since (month–year)
         <input id="startedPraying" type="month" style="margin-top:6px" />
       </label>
-      <p class="hint" style="text-align:left;margin-top:6px" id="startedPrayingHint">Optional. Days from accountability until this month count as historical red debt (never prayed). From this month on, only misses add red; on-time stays green, late/make-up stays orange.</p>
+      <p class="hint" style="text-align:left;margin-top:6px" id="startedPrayingHint">Optional. Days from accountability until this month = historical red debt. Days from this month until you press Save &amp; calculate = assumed already prayed (credited). Live misses only count after Calculate.</p>
+      <p class="hint" style="text-align:left;margin-top:4px" id="accountabilityHint"></p>
       <div class="controls" style="margin-top:14px;justify-content:flex-start">
         <button type="button" class="primary" id="saveLedgerBtn">Save &amp; calculate</button>
       </div>
       <div id="ledgerStats" style="margin-top:16px;display:none">
         <div class="prayer-row"><span class="name">Days since accountability</span><span class="time" id="statDays">0</span></div>
-        <div class="prayer-row"><span class="name">Farz rakats owed (17×days)</span><span class="time" id="statOwed">0</span></div>
+        <div class="prayer-row"><span class="name">Total farz since accountability (17×days)</span><span class="time" id="statOwed">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Historical debt before started praying (red)</span><span class="time" id="statHistorical" style="color:var(--danger)">0</span></div>
-        <div class="prayer-row"><span class="name">Days since started praying</span><span class="time" id="statActiveDays">0</span></div>
+        <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">Assumed covered since started praying (until Calculate)</span><span class="time" id="statAssumed" style="color:var(--ok)">0</span></div>
+        <div class="prayer-row"><span class="name">Days assumed covered</span><span class="time" id="statAssumedDays">0</span></div>
+        <div class="prayer-row"><span class="name">Live tracking days (after Calculate)</span><span class="time" id="statActiveDays">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--ok);padding-left:8px"><span class="name">On time rakats (green)</span><span class="time" id="statGreen" style="color:var(--ok)">0</span></div>
         <div class="prayer-row" style="border-left:3px solid #fb923c;padding-left:8px"><span class="name">Made-up rakats (orange)</span><span class="time" id="statOrange" style="color:#fb923c">0</span></div>
         <div class="prayer-row" style="border-left:3px solid var(--danger);padding-left:8px"><span class="name">Missed / still owed rakats (red)</span><span class="time" id="statRed" style="color:var(--danger)">0</span></div>
-        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count (pays down red, including historical debt).</p>
+        <p class="hint" style="text-align:left" id="trackingStartHint"></p>
+        <p class="hint" style="text-align:left">Check a salah todo = that prayer’s farz rakats on time. Log make-up as rakat count (pays down red, including historical debt). Missing count for the active period starts only after Save &amp; calculate.</p>
         <label style="display:block;font-size:0.8rem;color:var(--muted);margin-top:10px">Add make-up farz rakats
           <div class="row" style="margin-top:6px;margin-bottom:0">
             <input id="makeupCount" type="number" min="1" max="50000" value="1" />
@@ -731,10 +735,13 @@
       try {
         return Object.assign({
           bday: "", puberty: "", pubertyAge: 15, startedPraying: "",
-          onTime: 0, makeup: 0
+          trackingStartedAt: "", onTime: 0, makeup: 0
         }, JSON.parse(localStorage.getItem(LEDGER_KEY) || "{}"));
       } catch {
-        return { bday: "", puberty: "", pubertyAge: 15, startedPraying: "", onTime: 0, makeup: 0 };
+        return {
+          bday: "", puberty: "", pubertyAge: 15, startedPraying: "",
+          trackingStartedAt: "", onTime: 0, makeup: 0
+        };
       }
     }
     function saveLedger(L) { localStorage.setItem(LEDGER_KEY, JSON.stringify(L)); }
@@ -744,6 +751,12 @@
       const [y,m,d] = s.split("-").map(Number);
       if (!y) return null;
       return new Date(y, m - 1, d);
+    }
+    function toDayKey(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + day;
     }
     function daysBetween(a, b) {
       const ms = 24 * 60 * 60 * 1000;
@@ -756,8 +769,9 @@
       if (pub) return pub;
       const bd = parseYMD(L.bday);
       if (!bd) return null;
-      const age = Number(L.pubertyAge) || 15;
-      return new Date(bd.getFullYear() + age, bd.getMonth(), bd.getDate());
+      const age = Number(L.pubertyAge);
+      const years = (Number.isFinite(age) && age > 0) ? age : 15;
+      return new Date(bd.getFullYear() + years, bd.getMonth(), bd.getDate());
     }
     /** "YYYY-MM" → first day of that month, or null */
     function parseStartedPraying(s) {
@@ -766,67 +780,108 @@
       if (!y || m < 1 || m > 12) return null;
       return new Date(y, m - 1, 1);
     }
+    /**
+     * Formula:
+     *   historical = days(accountability → day before startedPraying) × 17
+     *   assumed    = days(startedPraying → trackingStartedAt) × 17   // credited, not owed
+     *   liveOwed   = days(day after trackingStartedAt → today) × 17
+     *   red        = historical + liveOwed − green − orange
+     * Until Save & calculate sets trackingStartedAt, assumed credits through today
+     * so the started-praying span is not treated as missed.
+     */
     function ledgerCounts(L) {
       const start = accountabilityStart(L);
       if (!start) return null;
       const today = new Date();
       const green = Math.max(0, L.onTime|0);
       const orange = Math.max(0, L.makeup|0);
+      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
       if (start > today) {
         return {
           days: 0, owed: 0, green, orange, red: 0,
-          historical: 0, activeDays: 0, activeOwed: 0, hasStartedPraying: false
+          historical: 0, assumed: 0, assumedDays: 0,
+          activeDays: 0, activeOwed: 0, hasStartedPraying: false,
+          trackingStartedAt: L.trackingStartedAt || ""
         };
       }
-      const RAKATS_PER_DAY = 17; // 2+4+4+3+4 farz
       const days = daysBetween(start, today);
-      const owed = days * RAKATS_PER_DAY;
+      const totalOwed = days * RAKATS_PER_DAY;
       const started = parseStartedPraying(L.startedPraying);
+      const trackKey = L.trackingStartedAt || "";
+      const trackDate = parseYMD(trackKey);
 
       // No started-praying date: previous behavior (full span owed; red = gap).
       if (!started) {
-        const red = Math.max(0, owed - green - orange);
+        const red = Math.max(0, totalOwed - green - orange);
         return {
-          days, owed, green, orange, red,
-          historical: 0, activeDays: days, activeOwed: owed, hasStartedPraying: false
+          days, owed: totalOwed, green, orange, red,
+          historical: 0, assumed: 0, assumedDays: 0,
+          activeDays: days, activeOwed: totalOwed, hasStartedPraying: false,
+          trackingStartedAt: trackKey
         };
       }
 
-      // Historical: accountability start → day before started-praying month.
-      // Active: started-praying month start → today (misses via owed−green−orange).
+      // Historical: accountability → day before started-praying month.
       let historicalDays = 0;
-      let activeStart = start;
+      let prayStart = start;
       if (start < started) {
-        const histEnd = new Date(started.getFullYear(), started.getMonth(), 0); // day before month start
+        const histEnd = new Date(started.getFullYear(), started.getMonth(), 0);
         if (histEnd >= start) historicalDays = daysBetween(start, histEnd);
-        activeStart = started;
-      } else {
-        // Started praying at/before accountability — no historical debt.
-        activeStart = start;
+        prayStart = started;
       }
 
       const historical = historicalDays * RAKATS_PER_DAY;
+
+      // Assumed covered: started praying → tracking start (or today if not yet calculated).
+      // Cap at today so we never credit the future.
+      let assumedEnd = today;
+      if (trackDate && trackDate < assumedEnd) assumedEnd = trackDate;
+      let assumedDays = 0;
+      if (prayStart <= assumedEnd) assumedDays = daysBetween(prayStart, assumedEnd);
+      const assumed = assumedDays * RAKATS_PER_DAY;
+
+      // Live tracking: day AFTER trackingStartedAt → today (only once Calculate was pressed).
       let activeDays = 0;
-      if (activeStart <= today) activeDays = daysBetween(activeStart, today);
+      if (trackDate) {
+        const liveStart = new Date(trackDate.getFullYear(), trackDate.getMonth(), trackDate.getDate() + 1);
+        if (liveStart <= today) activeDays = daysBetween(liveStart, today);
+      }
       const activeOwed = activeDays * RAKATS_PER_DAY;
-      // Makeup (orange) pays down red including historical debt; green is on-time after started praying.
+
+      // red = historical + post-calculate misses − green − orange
+      // equivalently totalOwed − assumed − green − orange (when trackDate set / assumed through today)
       const red = Math.max(0, historical + activeOwed - green - orange);
       return {
-        days, owed: historical + activeOwed, green, orange, red,
-        historical, activeDays, activeOwed, hasStartedPraying: true
+        days, owed: totalOwed, green, orange, red,
+        historical, assumed, assumedDays,
+        activeDays, activeOwed, hasStartedPraying: true,
+        trackingStartedAt: trackKey
       };
     }
     function syncLedgerUI() {
       const L = loadLedger();
       document.getElementById("bday").value = L.bday || "";
       document.getElementById("puberty").value = L.puberty || "";
-      document.getElementById("pubertyAge").value = L.pubertyAge || 15;
+      const ageVal = Number(L.pubertyAge);
+      document.getElementById("pubertyAge").value = (Number.isFinite(ageVal) && ageVal > 0) ? ageVal : 15;
       document.getElementById("startedPraying").value = L.startedPraying || "";
       const hintEl = document.getElementById("startedPrayingHint");
-      if (!L.startedPraying) {
-        hintEl.textContent = "Not set — counting from accountability start (previous behavior). Set month–year so years before you started praying stay red historical debt.";
+      const accHint = document.getElementById("accountabilityHint");
+      const acc = accountabilityStart(L);
+      if (acc) {
+        const via = L.puberty
+          ? "exact accountability date"
+          : ("birthday + age " + ((Number.isFinite(ageVal) && ageVal > 0) ? ageVal : 15));
+        accHint.textContent = "Accountability start: " + toDayKey(acc) + " (" + via + ").";
       } else {
-        hintEl.textContent = "From accountability until the day before this month: all farz rakats are historical red debt. From this month on: on-time = green, late/make-up = orange, misses = red.";
+        accHint.textContent = "Set birthday (with age at puberty) or an exact accountability date.";
+      }
+      if (!L.startedPraying) {
+        hintEl.textContent = "Not set — counting from accountability start (previous behavior). Set month–year so years before you started praying stay red historical debt; days after that until Calculate are assumed covered.";
+      } else if (!L.trackingStartedAt) {
+        hintEl.textContent = "Started praying set. Press Save & calculate to credit days from that month through today as already prayed, keep historical debt red, and start live miss tracking from tomorrow.";
+      } else {
+        hintEl.textContent = "Historical red = accountability → day before started praying. Assumed covered = started praying → " + L.trackingStartedAt + ". Live misses = after that date.";
       }
       const c = ledgerCounts(L);
       const box = document.getElementById("ledgerStats");
@@ -835,17 +890,30 @@
       document.getElementById("statDays").textContent = String(c.days);
       document.getElementById("statOwed").textContent = String(c.owed);
       document.getElementById("statHistorical").textContent = String(c.historical);
+      document.getElementById("statAssumed").textContent = String(c.assumed);
+      document.getElementById("statAssumedDays").textContent = String(c.assumedDays);
       document.getElementById("statActiveDays").textContent = String(c.activeDays);
       document.getElementById("statGreen").textContent = String(c.green);
       document.getElementById("statOrange").textContent = String(c.orange);
       document.getElementById("statRed").textContent = String(c.red);
+      const trackHint = document.getElementById("trackingStartHint");
+      if (c.hasStartedPraying && c.trackingStartedAt) {
+        trackHint.textContent = "Tracking started: " + c.trackingStartedAt +
+          ". Assumed covered " + c.assumedDays + " days (" + c.assumed +
+          " rakats). Live window: " + c.activeDays + " days.";
+      } else if (c.hasStartedPraying) {
+        trackHint.textContent = "Not yet calculated — preview credits started-praying days through today as assumed covered. Press Save & calculate to lock tracking start.";
+      } else {
+        trackHint.textContent = "";
+      }
       if (c.red === 0) {
         document.getElementById("ledgerHint").textContent =
-          "Ledger balanced — green + orange cover all owed rakats.";
+          "Ledger balanced — green + orange cover historical + live missed rakats.";
       } else if (c.hasStartedPraying && c.historical > 0) {
         document.getElementById("ledgerHint").textContent =
-          c.red + " farz rakats still owed (red), including " + c.historical +
-          " historical before started praying (make-up pays these down).";
+          c.red + " farz rakats still owed (red): historical " + c.historical +
+          " + live " + c.activeOwed + " − green " + c.green + " − orange " + c.orange +
+          ". Assumed covered " + c.assumed + " not counted as missed.";
       } else {
         document.getElementById("ledgerHint").textContent =
           c.red + " farz rakats still missed / owed (red).";
@@ -855,12 +923,16 @@
       const L = loadLedger();
       L.bday = document.getElementById("bday").value;
       L.puberty = document.getElementById("puberty").value;
-      L.pubertyAge = Number(document.getElementById("pubertyAge").value) || 15;
+      const ageRaw = Number(document.getElementById("pubertyAge").value);
+      L.pubertyAge = (Number.isFinite(ageRaw) && ageRaw > 0) ? ageRaw : 15;
       L.startedPraying = document.getElementById("startedPraying").value || "";
       if (!L.bday && !L.puberty) {
         document.getElementById("ledgerHint").textContent = "Enter birthday or an accountability start date.";
         return;
       }
+      // Refresh tracking start to today on each Save & calculate so the past
+      // since startedPraying is credited once as assumed already prayed.
+      L.trackingStartedAt = todayISO();
       saveLedger(L);
       syncLedgerUI();
     };
