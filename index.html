@@ -1357,24 +1357,6 @@
         applyingCloud = false;
       }
       refreshAppUI();
-      // Reliable fallback if UI helpers still missing / list empty after cloud had todos
-      try {
-        let expectedTodos = 0;
-        const rawTodos = data.keys["todo-app-v3"];
-        if (rawTodos) {
-          const parsed = typeof rawTodos === "string" ? JSON.parse(rawTodos) : rawTodos;
-          if (Array.isArray(parsed)) expectedTodos = parsed.length;
-        }
-        const list = document.getElementById("list");
-        const stillEmpty = !list || !list.children.length || !!list.querySelector("li.empty");
-        const helpersMissing = typeof window.render !== "function";
-        if ((helpersMissing || (expectedTodos > 0 && stillEmpty)) && !sessionStorage.getItem("todo-cloud-ui-reloaded")) {
-          sessionStorage.setItem("todo-cloud-ui-reloaded", "1");
-          location.reload();
-        }
-      } catch (e) {
-        console.warn("cloud UI reload check:", e);
-      }
     }
 
     function refreshAppUI() {
@@ -1398,18 +1380,28 @@
     }
 
     async function fetchCloudRow(userId) {
-      const query = supabase
-        .from("app_state")
-        .select("data, updated_at")
-        .eq("user_id", userId)
-        .eq("app_id", APP_ID)
-        .maybeSingle();
-      const timeout = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Cloud load timed out after 15s. Check your connection and try refreshing.")), 15000);
-      });
-      const { data, error } = await Promise.race([query, timeout]);
-      if (error) throw error;
-      return data;
+      // Hard cap so a hung auth-lock fetch cannot block the UI for long.
+      // Local data already rendered; timeout keeps using this device's copy.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const { data, error } = await supabase
+          .from("app_state")
+          .select("data, updated_at")
+          .eq("user_id", userId)
+          .eq("app_id", APP_ID)
+          .abortSignal(controller.signal)
+          .maybeSingle();
+        if (error) throw error;
+        return data;
+      } catch (e) {
+        if (controller.signal.aborted || (e && (e.name === "AbortError" || /aborted|abort/i.test(String(e.message || e))))) {
+          throw new Error("Cloud load timed out after 5s — using this device’s data.");
+        }
+        throw e;
+      } finally {
+        clearTimeout(timeoutId);
+      }
     }
 
     async function upsertCloud(userId, blob) {
@@ -1453,7 +1445,8 @@
       currentUser = user;
       syncReady = false;
       updateAuthUI();
-      setStatus("Loading your cloud data…");
+      // Local list already painted from localStorage; cloud is background-only.
+      setStatus("Syncing with your account…");
       try {
         const row = await fetchCloudRow(user.id);
         const localBlob = collectLocalBlob();
@@ -1465,34 +1458,58 @@
             setStatus("Signed in — nothing to sync yet", "ok");
           }
         } else {
-          // Prefer newer: compare cloud updated_at vs now is not local; on login load cloud.
-          // If local has data and cloud is older than a local marker we don't have —
-          // requirement: if cloud has data → load cloud (thereafter sync on changes).
+          // If cloud has data → load cloud (thereafter sync on changes).
           lastCloudUpdatedAt = row.updated_at;
           applyCloudBlob(row.data);
           setStatus("Loaded data from your account", "ok");
         }
       } catch (e) {
         console.error(e);
-        setStatus("Cloud sync error: " + (e.message || e), "err");
+        const msg = String(e && e.message || e);
+        // Keep whatever localStorage already showed; do not blank the UI.
+        setStatus(/timed out/i.test(msg)
+          ? "Cloud sync timed out — using this device’s data"
+          : ("Cloud sync error: " + msg), "err");
       } finally {
         syncReady = true;
         signedInRunning = false;
       }
     }
 
-    /** Queue onSignedIn so only one runs at a time; never call DB work inside onAuthStateChange. */
+    /**
+     * Queue cloud pull so only one runs at a time.
+     * Must use setTimeout(0) (macrotask), not queueMicrotask: supabase-js holds an
+     * auth lock during onAuthStateChange/getSession; DB calls started in the same
+     * turn can deadlock and hang until our timeout (~15s before, now 5s).
+     */
     function queueOnSignedIn(user) {
-      signedInMutex = signedInMutex.then(() => onSignedIn(user)).catch((e) => {
-        console.error("onSignedIn failed:", e);
-      });
+      signedInMutex = signedInMutex.then(() => new Promise((resolve) => {
+        setTimeout(() => {
+          Promise.resolve()
+            .then(() => onSignedIn(user))
+            .catch((e) => console.error("onSignedIn failed:", e))
+            .finally(resolve);
+        }, 0);
+      }));
       return signedInMutex;
+    }
+
+    /** Single boot/sign-in pull scheduler — avoids INITIAL_SESSION + getSession double fetch. */
+    let cloudPullScheduledFor = null;
+    function scheduleCloudPull(user) {
+      if (!user) return;
+      currentUser = user;
+      updateAuthUI();
+      if (cloudPullScheduledFor === user.id) return;
+      cloudPullScheduledFor = user.id;
+      queueOnSignedIn(user);
     }
 
     function onSignedOut() {
       currentUser = null;
       syncReady = false;
       lastCloudUpdatedAt = null;
+      cloudPullScheduledFor = null;
       updateAuthUI();
       setStatus("");
     }
@@ -1548,40 +1565,36 @@
       if (SYNC_KEYS.includes(key)) scheduleCloudSave();
     };
 
-    let bootHandled = false;
-    // IMPORTANT: do not await DB calls inside this callback (Supabase JS deadlock).
+    // IMPORTANT: never await DB/auth calls inside this callback (Supabase JS deadlock).
+    // INITIAL_SESSION is ignored here — getSession() below owns the first cloud pull so
+    // we do not double-fetch (which previously left one request hung until the 15s timeout).
     supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user) {
-        const shouldLoad =
-          event === "SIGNED_IN" ||
-          event === "INITIAL_SESSION" ||
-          (event === "TOKEN_REFRESHED" && !bootHandled);
-        if (shouldLoad && (!currentUser || currentUser.id !== session.user.id || event === "SIGNED_IN" || !bootHandled)) {
-          bootHandled = true;
-          const user = session.user;
-          queueMicrotask(() => {
-            queueOnSignedIn(user);
-          });
-        } else {
-          currentUser = session.user;
-          updateAuthUI();
-        }
-      } else if (event === "SIGNED_OUT" || (event === "INITIAL_SESSION" && !session)) {
-        bootHandled = true;
+      if (event === "INITIAL_SESSION") {
+        return;
+      }
+      if (event === "SIGNED_IN" && session?.user) {
+        // OAuth return or explicit sign-in. Deduped if getSession already scheduled same user.
+        scheduleCloudPull(session.user);
+      } else if (event === "SIGNED_OUT") {
+        cloudPullScheduledFor = null;
+        onSignedOut();
+      } else if (session?.user) {
+        currentUser = session.user;
+        updateAuthUI();
+      } else if (!session) {
+        cloudPullScheduledFor = null;
         onSignedOut();
       }
     });
 
-    // Fallback if onAuthStateChange is slow; getSession also picks up hash/query tokens
+    // Boot: session first → auth UI; local list already rendered by the classic script.
+    // Cloud pull is deferred (setTimeout 0 inside queueOnSignedIn) and non-blocking.
     const { data: { session }, error: sessErr } = await supabase.auth.getSession();
     if (sessErr) console.warn(sessErr);
-    if (!bootHandled) {
-      if (session?.user) {
-        bootHandled = true;
-        await queueOnSignedIn(session.user);
-      } else {
-        updateAuthUI();
-      }
+    if (session?.user) {
+      scheduleCloudPull(session.user);
+    } else {
+      updateAuthUI();
     }
 
     // Clean OAuth tokens from URL after session is established
