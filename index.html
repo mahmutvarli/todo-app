@@ -390,6 +390,22 @@
       }
       return { prayer, habit };
     }
+    /** Stable Tabata focus key — survives inject reordering list indices. */
+    function todoFocusKey(it) {
+      if (!it) return "";
+      if (it.kind === "prayer" && it.prayer && it.date) return "prayer:" + it.date + ":" + it.prayer;
+      if (it.kind === "habit" && it.habitId && it.date) return "habit:" + it.date + ":" + it.habitId;
+      if (it.id) return "todo:" + it.id;
+      return "todo:" + (it.text || "");
+    }
+    function findTodoByFocusKey(items, key) {
+      if (!key) return null;
+      for (const it of items || []) {
+        if (todoFocusKey(it) === key) return it;
+      }
+      return null;
+    }
+
     function recordDoneId(doneKey, date, id) {
       if (!date || !id) return;
       const map = parseDoneMapJson(localStorage.getItem(doneKey));
@@ -443,10 +459,10 @@
     function fillFocus() {
       const cur = focusSel.value;
       focusSel.innerHTML = '<option value="">— none —</option>';
-      load().forEach((item, i) => {
+      load().forEach((item) => {
         if (item.done) return;
         const opt = document.createElement("option");
-        opt.value = String(i);
+        opt.value = todoFocusKey(item);
         opt.textContent = item.text;
         focusSel.appendChild(opt);
       });
@@ -521,15 +537,25 @@
         del.type = "button";
         del.className = "ghost del";
         del.textContent = "×";
-        del.onclick = () => { items.splice(i, 1); save(items); render(); };
+        del.onclick = () => {
+          const it = items[i];
+          // Auto todos: mark done so inject does not bounce them back (no archive/ledger/veli).
+          if (it && it.kind === "prayer" && it.prayer) {
+            recordDoneId("todo-app-prayer-done-v1", it.date || todayISO(), it.prayer);
+          } else if (it && it.kind === "habit" && it.habitId) {
+            recordDoneId("todo-app-habit-done-v1", it.date || todayISO(), it.habitId);
+          }
+          items.splice(i, 1); save(items); render();
+        };
         const tabata = document.createElement("button");
         tabata.type = "button";
         tabata.className = "ghost";
         tabata.textContent = "⏱";
         tabata.onclick = () => {
+          const key = todoFocusKey(items[i]);
           showTab("tabata");
           fillFocus();
-          focusSel.value = String(i);
+          focusSel.value = key;
         };
         li.append(check, span, tabata, del);
         frag.appendChild(li);
@@ -543,7 +569,7 @@
       const text = input.value.trim();
       if (!text) return;
       const items = load();
-      items.unshift({ text, done: false });
+      items.unshift({ text, done: false, id: Date.now() + "-" + Math.random().toString(36).slice(2, 7) });
       save(items);
       input.value = "";
       render();
@@ -607,9 +633,9 @@
       metaEl.textContent = focusLabel() + "Round " + round + " / " + totalRounds;
     }
     function focusLabel() {
-      const i = focusSel.value;
-      if (i === "") return "";
-      const t = load()[Number(i)];
+      const key = focusSel.value;
+      if (!key) return "";
+      const t = findTodoByFocusKey(load(), key);
       return t ? ("Focus: " + t.text + " · ") : "";
     }
     function tick() {
@@ -753,9 +779,11 @@
       if (s.lastDate !== date) return;
       const due = duePrayerNames(s.times);
       let items = load();
+      let changed = false;
       // remove completed prayer todos (checked off = gone)
-      const before = items.length;
-      items = items.filter(it => !(it.kind === "prayer" && it.done));
+      const filtered = items.filter(it => !(it.kind === "prayer" && it.done));
+      if (filtered.length !== items.length) changed = true;
+      items = filtered;
       const doneMap = parseDoneMapJson(localStorage.getItem("todo-app-prayer-done-v1"));
       const doneToday = new Set(Array.isArray(doneMap[date]) ? doneMap[date] : []);
       // Add due unpaid prayers newest-first so current ends up at top after unshifts
@@ -770,12 +798,13 @@
           time: s.times[name],
           date: date
         });
+        changed = true;
       }
-      // also: after midnight, add Fajr when due; keep yesterday unchecked Isha until checked
-      save(items);
-      const current = due.length ? due[due.length - 1] : null;
-      if (items.length !== before || (current && items[0] && items[0].prayer === current)) render();
-      else if (current) render();
+      // Keep yesterday unchecked Isha until checked; only save/render when something changed
+      if (changed) {
+        save(items);
+        render();
+      }
     }
 
     function upsertPrayerTodos(times, date) {
@@ -1427,11 +1456,15 @@
       el.innerHTML = dates.map(d => {
         const items = byDate[d].map(r => {
           const cls = r.status === "on-time" ? "on-time" : (r.status === "missed" ? "missed" : "late");
+          const statusColor = cls === "on-time" ? "var(--ok)" : (cls === "missed" ? "var(--danger)" : "#fb923c");
           const when = r.completedAt ? new Date(r.completedAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
           var label = r.text || ("Salah · " + r.prayer);
-          var metaLine = "Athan " + (r.time || "") + (when ? " · done " + when : "") + " · " + (r.rakats || "") + " rakats";
+          var isBrush = r.prayer === "brush-am" || r.prayer === "brush-pm";
+          var metaLine = (isBrush ? ("Due " + (r.time || "")) : ("Athan " + (r.time || ""))) +
+            (when ? " · done " + when : "") +
+            (!isBrush && (r.rakats|0) > 0 ? (" · " + r.rakats + " rakats") : "");
           return '<div class="arch-item ' + cls + '"><div><div class="label">' + label +
-            '</div><div class="meta">' + metaLine + '</div></div><div class="meta">' +
+            '</div><div class="meta">' + metaLine + '</div></div><div class="meta" style="color:' + statusColor + ';font-weight:650">' +
             cls.replace("-", " ") + '</div></div>';
         }).join("");
         return '<div class="arch-day"><h3>' + d + "</h3>" + items + "</div>";
@@ -1467,10 +1500,40 @@
       try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
       const doneToday = new Set(doneMap[date] || []);
 
+      const prayerTimeToday = (name) => {
+        const s = loadPrayerSettings();
+        return s.times && s.lastDate === date && s.times[name] ? toMins(s.times[name]) : null;
+      };
+      const habitExpiredFn = (habitId, itemDate) => {
+        const a = new Date(itemDate + "T00:00:00");
+        const b = new Date(date + "T00:00:00");
+        const age = Math.round((b - a) / (24 * 60 * 60 * 1000));
+        if (age < 0) return false;
+        if (habitId === "brush-am") {
+          if (age > 0) return true;
+          const dhuhr = prayerTimeToday("Dhuhr");
+          return dhuhr != null && mins >= dhuhr;
+        }
+        if (habitId === "brush-pm") {
+          if (age > 1) return true;
+          if (age === 1) {
+            const fajr = prayerTimeToday("Fajr");
+            return fajr != null && mins >= fajr;
+          }
+          return false;
+        }
+        return false;
+      };
+
       for (const h of HABITS) {
         const hMins = toMins(h.time);
-        // add when due time reached
-        if (mins >= hMins && !habitExists(items, date, h.id) && !doneToday.has(h.id)) {
+        // Add when due — but NEVER add an already-expired habit (avoids bounce → instant miss).
+        if (
+          mins >= hMins &&
+          !habitExists(items, date, h.id) &&
+          !doneToday.has(h.id) &&
+          !habitExpiredFn(h.id, date)
+        ) {
           items.unshift({
             text: h.text,
             done: false,
@@ -1484,45 +1547,14 @@
         }
       }
 
-      // Habit windows are tied to prayer times, rather than fixed clock times:
-      // morning brush ends at today's Dhuhr, while night brush ends after the
-      // following day's Fajr. Keep an older unchecked item until its actual
-      // prayer boundary has passed, even if the app was closed in between.
-      const daysBetween = (from, to) => {
-        const a = new Date(from + "T00:00:00");
-        const b = new Date(to + "T00:00:00");
-        return Math.round((b - a) / (24 * 60 * 60 * 1000));
-      };
-      const prayerTimeToday = (name) => {
-        const s = loadPrayerSettings();
-        return s.times && s.lastDate === date && s.times[name] ? toMins(s.times[name]) : null;
-      };
-      const habitExpired = (h, itemDate) => {
-        const age = daysBetween(itemDate, date);
-        if (age < 0) return false;
-        if (h.id === "brush-am") {
-          if (age > 0) return true;
-          const dhuhr = prayerTimeToday("Dhuhr");
-          return dhuhr != null && mins >= dhuhr;
-        }
-        if (h.id === "brush-pm") {
-          // A night habit from an earlier date is definitely stale once a
-          // still-later day has begun. For yesterday, wait until today's Fajr.
-          if (age > 1) return true;
-          if (age === 1) {
-            const fajr = prayerTimeToday("Fajr");
-            return fajr != null && mins >= fajr;
-          }
-          return false;
-        }
-        return false;
-      };
+      // Habit windows are tied to prayer times (see habitExpiredFn above).
+      // Morning brush ends at today's Dhuhr; night brush ends after next Fajr.
 
       const keep = [];
       for (const it of items) {
         if (it.kind !== "habit" || it.done) { keep.push(it); continue; }
         const h = HABITS.find(x => x.id === it.habitId);
-        if (!h || !habitExpired(h, it.date)) { keep.push(it); continue; }
+        if (!h || !habitExpiredFn(h.id, it.date)) { keep.push(it); continue; }
         archivePrayer({
           prayer: it.habitId,
           text: it.text,
@@ -1573,6 +1605,7 @@
     window.duePrayerNames = duePrayerNames;
     window.pruneCompletedAutoTodos = pruneCompletedAutoTodos;
     window.recordDoneId = recordDoneId;
+    window.todoFocusKey = todoFocusKey;
 
     // migrate
     if (!localStorage.getItem(KEY)) {
@@ -1752,6 +1785,59 @@
               const open = k === "todo-app-prayer-done-v1" ? localOpen.prayer : localOpen.habit;
               merged = stripDoneIdsForOpenItems(merged, open);
               localStorage.setItem(k, JSON.stringify(merged));
+              continue;
+            }
+            // Empty cloud todos must never wipe local open todos (manual or auto).
+            if (k === "todo-app-v3") {
+              let cloudItems = [];
+              try {
+                cloudItems = typeof val === "string" ? JSON.parse(val || "[]") : (val || []);
+                if (!Array.isArray(cloudItems)) cloudItems = [];
+              } catch (_) { cloudItems = []; }
+              const localItems = load();
+              if (cloudItems.length === 0 && localItems.length > 0) {
+                continue; // keep local
+              }
+              localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
+              continue;
+            }
+            // Veli: union awarded keys (local wins conflicts); recompute total.
+            if (k === "todo-app-veli-points-v1") {
+              const parseV = (raw) => {
+                try {
+                  const o = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
+                  return {
+                    total: o.total|0,
+                    awarded: (o.awarded && typeof o.awarded === "object") ? o.awarded : {}
+                  };
+                } catch (_) { return { total: 0, awarded: {} }; }
+              };
+              const localV = parseV(localStorage.getItem(k));
+              const cloudV = parseV(val);
+              const awarded = Object.assign({}, cloudV.awarded, localV.awarded);
+              let total = 0;
+              Object.keys(awarded).forEach(ak => { total += awarded[ak]|0; });
+              localStorage.setItem(k, JSON.stringify({ total, awarded }));
+              continue;
+            }
+            // Archive: union by id (local wins); keep both if no id.
+            if (k === "todo-app-archive-v1") {
+              const parseA = (raw) => {
+                try {
+                  const a = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+                  return Array.isArray(a) ? a : [];
+                } catch (_) { return []; }
+              };
+              const localA = parseA(localStorage.getItem(k));
+              const cloudA = parseA(val);
+              const byId = new Map();
+              cloudA.forEach(r => { if (r && r.id) byId.set(r.id, r); });
+              localA.forEach(r => { if (r && r.id) byId.set(r.id, r); });
+              const extras = [];
+              [...cloudA, ...localA].forEach(r => { if (r && !r.id) extras.push(r); });
+              const rows = [...byId.values(), ...extras];
+              rows.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+              localStorage.setItem(k, JSON.stringify(rows));
               continue;
             }
             if (val == null) localStorage.removeItem(k);

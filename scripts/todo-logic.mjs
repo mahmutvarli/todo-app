@@ -1,6 +1,6 @@
 /**
  * Pure helpers for prayer/habit done tracking + cloud merge.
- * Kept in sync with index.html applyCloudBlob / releaseDuePrayerTodos.
+ * Kept in sync with index.html applyCloudBlob / releaseDuePrayerTodos / releaseHabits.
  */
 
 export const PRAYER_NAMES = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
@@ -8,6 +8,14 @@ export const PRAYER_DONE_KEY = "todo-app-prayer-done-v1";
 export const HABIT_DONE_KEY = "todo-app-habit-done-v1";
 export const TODOS_KEY = "todo-app-v3";
 export const PRAYER_SETTINGS_KEY = "todo-app-prayer-settings-v1";
+export const ARCHIVE_KEY = "todo-app-archive-v1";
+export const VELI_KEY = "todo-app-veli-points-v1";
+export const LEDGER_KEY = "todo-app-ledger-v1";
+
+export const HABIT_DEFS = [
+  { id: "brush-am", text: "Brush teeth (morning)", time: "10:00", makeup: false },
+  { id: "brush-pm", text: "Brush teeth (night)", time: "22:00", makeup: false },
+];
 
 export function parseDoneMap(raw) {
   try {
@@ -104,6 +112,12 @@ export function prayerTodoExists(items, date, name) {
   );
 }
 
+export function habitTodoExists(items, date, id) {
+  return (items || []).some(
+    (it) => it.kind === "habit" && it.date === date && it.habitId === id
+  );
+}
+
 export function toMins(hhmm) {
   const [h, m] = (hhmm || "0:0").split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
@@ -165,6 +179,131 @@ export function checkOffPrayer(items, prayerDone, index) {
   return { items: nextItems, prayerDone: nextDone, removed: it };
 }
 
+/** Simulate check-off for habit. */
+export function checkOffHabit(items, habitDone, index) {
+  const it = items[index];
+  if (!it || it.kind !== "habit") return { items, habitDone, removed: null };
+  const d = it.date;
+  const nextDone = recordDone(habitDone, d, it.habitId);
+  const nextItems = items.filter((_, i) => i !== index);
+  return { items: nextItems, habitDone: nextDone, removed: it };
+}
+
+/**
+ * Delete an item. For prayer/habit, record done so inject does not bounce it back.
+ * Manual todos are just removed.
+ */
+export function deleteTodoItem(items, prayerDone, habitDone, index) {
+  const it = items[index];
+  if (!it) return { items, prayerDone, habitDone, removed: null };
+  let nextPrayer = prayerDone;
+  let nextHabit = habitDone;
+  if (it.kind === "prayer" && it.prayer && it.date) {
+    nextPrayer = recordDone(prayerDone, it.date, it.prayer);
+  } else if (it.kind === "habit" && it.habitId && it.date) {
+    nextHabit = recordDone(habitDone, it.date, it.habitId);
+  }
+  return {
+    items: items.filter((_, i) => i !== index),
+    prayerDone: nextPrayer,
+    habitDone: nextHabit,
+    removed: it,
+  };
+}
+
+/**
+ * Stable focus key for Tabata jump — survives inject unshifts reordering indices.
+ */
+export function todoFocusKey(it) {
+  if (!it) return "";
+  if (it.kind === "prayer" && it.prayer && it.date) return "prayer:" + it.date + ":" + it.prayer;
+  if (it.kind === "habit" && it.habitId && it.date) return "habit:" + it.date + ":" + it.habitId;
+  // Manual todos: prefer explicit id when present, else text.
+  if (it.id) return "todo:" + it.id;
+  return "todo:" + (it.text || "");
+}
+
+export function findTodoByFocusKey(items, key) {
+  if (!key) return null;
+  return (items || []).find((it) => todoFocusKey(it) === key) || null;
+}
+
+/** Parse a todos JSON array safely. */
+export function parseTodoList(raw) {
+  try {
+    const a = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Empty cloud todos must not wipe local open todos.
+ * Non-empty cloud replaces (then caller prunes + injects).
+ */
+export function chooseTodosAfterCloud(localRaw, cloudRaw) {
+  const local = parseTodoList(localRaw);
+  const cloud = parseTodoList(cloudRaw);
+  if (cloud.length === 0 && local.length > 0) return local;
+  return cloud;
+}
+
+export function parseVeli(raw) {
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
+    return {
+      total: (o && o.total) | 0,
+      awarded: o && o.awarded && typeof o.awarded === "object" && !Array.isArray(o.awarded) ? { ...o.awarded } : {},
+    };
+  } catch {
+    return { total: 0, awarded: {} };
+  }
+}
+
+/**
+ * Merge Veli awarded maps (idempotent keys). Local wins on same-key conflict.
+ * Total is recomputed from awarded deltas so cloud overwrite cannot drift.
+ */
+export function mergeVeliPoints(localRaw, cloudRaw) {
+  const local = parseVeli(localRaw);
+  const cloud = parseVeli(cloudRaw);
+  const awarded = { ...cloud.awarded, ...local.awarded };
+  let total = 0;
+  for (const d of Object.values(awarded)) total += d | 0;
+  return { total, awarded };
+}
+
+export function parseArchive(raw) {
+  try {
+    const a = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Union archive rows by id; local row wins on conflict; newest completedAt first. */
+export function mergeArchives(localRaw, cloudRaw) {
+  const local = parseArchive(localRaw);
+  const cloud = parseArchive(cloudRaw);
+  const byId = new Map();
+  for (const row of cloud) {
+    if (row && row.id) byId.set(row.id, row);
+  }
+  for (const row of local) {
+    if (row && row.id) byId.set(row.id, row);
+  }
+  // Rows without id: keep both (rare)
+  const extras = [];
+  for (const row of [...cloud, ...local]) {
+    if (row && !row.id) extras.push(row);
+  }
+  const rows = [...byId.values(), ...extras];
+  rows.sort((a, b) => String(b.completedAt || "").localeCompare(String(a.completedAt || "")));
+  return rows;
+}
+
 /**
  * Apply a cloud blob onto local keys with done-map merge + open-item reconcile + todo prune.
  * localStore / cloudKeys are plain { key: stringValue } maps.
@@ -187,6 +326,14 @@ export function applyCloudBlobWithDoneMerge(localStore, cloudKeys, syncKeys) {
       const open = k === PRAYER_DONE_KEY ? localOpen.prayer : localOpen.habit;
       merged = stripDoneIdsForOpenItems(merged, open);
       next[k] = JSON.stringify(merged);
+    } else if (k === TODOS_KEY) {
+      // Empty cloud must not wipe local open todos (manual or auto).
+      const chosen = chooseTodosAfterCloud(localStore[k], val);
+      next[k] = JSON.stringify(chosen);
+    } else if (k === VELI_KEY) {
+      next[k] = JSON.stringify(mergeVeliPoints(localStore[k], val));
+    } else if (k === ARCHIVE_KEY) {
+      next[k] = JSON.stringify(mergeArchives(localStore[k], val));
     } else if (val == null) {
       delete next[k];
     } else {
@@ -199,10 +346,6 @@ export function applyCloudBlobWithDoneMerge(localStore, cloudKeys, syncKeys) {
     try {
       const localPs = JSON.parse(localStore[PRAYER_SETTINGS_KEY] || "{}") || {};
       const cloudPs = JSON.parse(next[PRAYER_SETTINGS_KEY] || "{}") || {};
-      const today =
-        localPs.lastDate && localPs.times
-          ? localPs.lastDate
-          : cloudPs.lastDate;
       if (
         localPs.times &&
         localPs.lastDate &&
@@ -218,7 +361,6 @@ export function applyCloudBlobWithDoneMerge(localStore, cloudKeys, syncKeys) {
             localPs.autoTodos != null ? localPs.autoTodos : cloudPs.autoTodos,
         });
       }
-      void today;
     } catch {
       /* keep cloud settings */
     }
@@ -268,6 +410,71 @@ export function habitExpired(habitId, itemDate, today, nowMins, times) {
   return false;
 }
 
+/**
+ * Should we add this habit for `date` at nowMins?
+ * Never add an already-expired habit (avoids bounce-add → instant miss archive).
+ */
+export function shouldAddHabit(habitId, scheduleTime, date, today, nowMins, times, items, habitDone) {
+  if (date !== today) return false;
+  if (habitTodoExists(items, date, habitId) || isDone(habitDone, date, habitId)) return false;
+  if (nowMins < toMins(scheduleTime)) return false;
+  if (habitExpired(habitId, date, today, nowMins, times)) return false;
+  return true;
+}
+
+/**
+ * Pure releaseHabits: add due non-expired habits; archive+done expired open ones.
+ * Returns { items, habitDone, archived, changed }.
+ */
+export function releaseHabitsPure(items, habitDone, { date, nowMins, times, habits }) {
+  const defs = habits || HABIT_DEFS;
+  let nextItems = [...(items || [])];
+  let nextDone = { ...(habitDone || {}) };
+  const archived = [];
+  let changed = false;
+
+  for (const h of defs) {
+    if (shouldAddHabit(h.id, h.time, date, date, nowMins, times, nextItems, nextDone)) {
+      nextItems = [
+        {
+          text: h.text,
+          done: false,
+          kind: "habit",
+          habitId: h.id,
+          makeup: false,
+          time: h.time,
+          date,
+        },
+        ...nextItems,
+      ];
+      changed = true;
+    }
+  }
+
+  const keep = [];
+  for (const it of nextItems) {
+    if (it.kind !== "habit" || it.done) {
+      keep.push(it);
+      continue;
+    }
+    const h = defs.find((x) => x.id === it.habitId);
+    if (!h || !habitExpired(h.id, it.date, date, nowMins, times)) {
+      keep.push(it);
+      continue;
+    }
+    archived.push({
+      prayer: it.habitId,
+      text: it.text,
+      time: it.time,
+      date: it.date,
+      status: "missed",
+    });
+    nextDone = recordDone(nextDone, it.date, it.habitId);
+    changed = true;
+  }
+  return { items: keep, habitDone: nextDone, archived, changed };
+}
+
 /** Ledger Save & calculate reset payload (only applied after user confirms). */
 export function ledgerSaveCalculate(L, today, confirmed) {
   if (!confirmed) return { L, applied: false };
@@ -278,4 +485,37 @@ export function ledgerSaveCalculate(L, today, confirmed) {
   next.qadaPending = { Fajr: 0, Dhuhr: 0, Asr: 0, Maghrib: 0, Isha: 0, Witr: 0 };
   next.trackingStartedAt = today;
   return { L: next, applied: true };
+}
+
+/**
+ * on-time if completed in [athan, nextAthan); late if after next athan.
+ * Mirrors index.html completionStatus with injectable times/now.
+ */
+export function completionStatusPure(prayer, athanTime, completedMins, times) {
+  const athan = toMins(athanTime);
+  let nextEnd = 24 * 60;
+  if (times) {
+    const idx = PRAYER_NAMES.indexOf(prayer);
+    if (idx >= 0 && idx < PRAYER_NAMES.length - 1) {
+      nextEnd = toMins(times[PRAYER_NAMES[idx + 1]]);
+    }
+  }
+  if (completedMins >= athan && completedMins < nextEnd) return "on-time";
+  if (completedMins >= nextEnd || (completedMins < athan && prayer !== "Fajr")) return "late";
+  return "on-time";
+}
+
+/** Idempotent award: returns { awarded, total, applied }. */
+export function awardVeliPure(state, key, delta) {
+  const awarded = { ...(state.awarded || {}) };
+  if (Object.prototype.hasOwnProperty.call(awarded, key)) {
+    return { awarded, total: state.total | 0, applied: false };
+  }
+  if (!key || !delta) {
+    // delta 0 still records for makeup-later sentinel when caller wants — but awardVeli skips !delta
+    return { awarded, total: state.total | 0, applied: false };
+  }
+  awarded[key] = delta;
+  const total = (state.total | 0) + delta;
+  return { awarded, total, applied: true };
 }
