@@ -532,6 +532,16 @@
           sub.className = "sub";
           sub.textContent = "Athan " + item.time;
           span.appendChild(sub);
+        } else if (item.kind === "habit" && item.time) {
+          const sub = document.createElement("span");
+          sub.className = "sub";
+          const hs = loadPrayerSettings();
+          const boundary = item.habitId === "brush-pm" ? "Isha" : "morning";
+          const endName = item.habitId === "brush-pm" ? "Fajr" : "Dhuhr";
+          const endTime = hs.lastDate === todayISO() && hs.times && hs.times[endName]
+            ? " · until " + endName + " " + hs.times[endName] : "";
+          sub.textContent = "Due " + boundary + " " + item.time + endTime;
+          span.appendChild(sub);
         }
         const del = document.createElement("button");
         del.type = "button";
@@ -1457,7 +1467,10 @@
         const label = isBrushId(parsed.prayer)
           ? (parsed.prayer === "brush-am" ? "Brush teeth (morning)" : "Brush teeth (night)")
           : ("Salah · " + parsed.prayer);
-        const time = parsed.prayer === "brush-am" ? "10:00" : (parsed.prayer === "brush-pm" ? "22:00" : "");
+        const ps = loadPrayerSettings();
+        const time = parsed.prayer === "brush-am" ? "10:00" :
+          (parsed.prayer === "brush-pm" && ps.lastDate === parsed.date && ps.times && ps.times.Isha != null
+            ? ps.times.Isha : "");
         rows = upsertArchiveRow(rows, {
           id: "bf-" + parsed.date + "-" + parsed.prayer + "-" + Math.random().toString(36).slice(2, 7),
           prayer: parsed.prayer,
@@ -1551,6 +1564,26 @@
       return row;
     }
 
+    function habitArchiveTime(prayer, date, fallback) {
+      if (prayer !== "brush-pm") return fallback || (prayer === "brush-am" ? "10:00" : "");
+      const s = loadPrayerSettings();
+      return s.lastDate === date && s.times && s.times.Isha != null
+        ? s.times.Isha : (fallback || "");
+    }
+
+    function habitArchiveMeta(row) {
+      const isNight = row.prayer === "brush-pm";
+      const isMorning = row.prayer === "brush-am";
+      if (!isNight && !isMorning) return "Due " + (row.time || "");
+      const dueName = isNight ? "Isha" : "morning";
+      const endName = isNight ? "Fajr" : "Dhuhr";
+      const dueTime = habitArchiveTime(row.prayer, row.date, row.time);
+      const s = loadPrayerSettings();
+      const endTime = s.lastDate === todayISO() && s.times && s.times[endName]
+        ? " · until " + endName + " " + s.times[endName] : "";
+      return "Due " + dueName + " " + dueTime + endTime;
+    }
+
     function renderArchive() {
       const rows = loadArchive();
       const el = document.getElementById("archiveList");
@@ -1572,7 +1605,7 @@
           const when = r.completedAt ? new Date(r.completedAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
           var label = r.text || ("Salah · " + r.prayer);
           var isBrush = r.prayer === "brush-am" || r.prayer === "brush-pm";
-          var metaLine = (isBrush ? ("Due " + (r.time || "")) : ("Athan " + (r.time || ""))) +
+          var metaLine = (isBrush ? habitArchiveMeta(r) : ("Athan " + (r.time || ""))) +
             (when ? " · done " + when : "") +
             (!isBrush && (r.rakats|0) > 0 ? (" · " + r.rakats + " rakats") : "");
           return '<div class="arch-item ' + cls + '"><div><div class="label">' + label +
@@ -1591,10 +1624,11 @@
     };
 
     // Non-makeup habits (e.g. brush teeth) — expire to archive, no makeup.
-    // Morning brush ends at today's Dhuhr; night brush ends after the next day's Fajr.
+    // Morning brush remains available from the morning window until Dhuhr;
+    // night brush starts with Isha and ends after the next day's Fajr.
     const HABITS = [
       { id: "brush-am", text: "Brush teeth (morning)", time: "10:00", makeup: false },
-      { id: "brush-pm", text: "Brush teeth (night)", time: "22:00", makeup: false }
+      { id: "brush-pm", text: "Brush teeth (night)", time: null, prayerTime: "Isha", makeup: false }
     ];
 
     function habitExists(items, date, id) {
@@ -1612,10 +1646,14 @@
       try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
       const doneToday = new Set(doneMap[date] || []);
 
-      const prayerTimeToday = (name) => {
-        const s = loadPrayerSettings();
-        return s.times && s.lastDate === date && s.times[name] ? toMins(s.times[name]) : null;
-      };
+      const prayerSettings = loadPrayerSettings();
+      const prayerTimes = prayerSettings.times && prayerSettings.lastDate === date
+        ? prayerSettings.times : null;
+      const prayerTimeToday = (name) =>
+        prayerTimes && prayerTimes[name] != null ? toMins(prayerTimes[name]) : null;
+      const habitScheduleTime = (h) => h.prayerTime
+        ? (prayerTimes && prayerTimes[h.prayerTime] != null ? prayerTimes[h.prayerTime] : null)
+        : h.time;
       const habitExpiredFn = (habitId, itemDate) => {
         const a = new Date(itemDate + "T00:00:00");
         const b = new Date(date + "T00:00:00");
@@ -1638,10 +1676,11 @@
       };
 
       for (const h of HABITS) {
-        const hMins = toMins(h.time);
+        const scheduleTime = habitScheduleTime(h);
         // Add when due — but NEVER add an already-expired habit (avoids bounce → instant miss).
         if (
-          mins >= hMins &&
+          scheduleTime != null &&
+          mins >= toMins(scheduleTime) &&
           !habitExists(items, date, h.id) &&
           !doneToday.has(h.id) &&
           !habitExpiredFn(h.id, date)
@@ -1652,12 +1691,23 @@
             kind: "habit",
             habitId: h.id,
             makeup: false,
-            time: h.time,
+            time: scheduleTime,
             date
           });
           changed = true;
         }
       }
+
+      // Keep open current-day items aligned with the latest prayer settings so
+      // the displayed due time is Isha/Fajr-derived rather than a stale default.
+      items = items.map((it) => {
+        if (it.kind !== "habit" || it.date !== date) return it;
+        const h = HABITS.find((x) => x.id === it.habitId);
+        const scheduleTime = h && habitScheduleTime(h);
+        if (scheduleTime == null || it.time === scheduleTime) return it;
+        changed = true;
+        return Object.assign({}, it, { time: scheduleTime });
+      });
 
       // Habit windows are tied to prayer times (see habitExpiredFn above).
       // Morning brush ends at today's Dhuhr; night brush ends after next Fajr.

@@ -13,9 +13,18 @@ export const VELI_KEY = "todo-app-veli-points-v1";
 export const LEDGER_KEY = "todo-app-ledger-v1";
 
 export const HABIT_DEFS = [
+  // Morning remains a daytime habit: it is available from 10:00 until Dhuhr.
   { id: "brush-am", text: "Brush teeth (morning)", time: "10:00", makeup: false },
-  { id: "brush-pm", text: "Brush teeth (night)", time: "22:00", makeup: false },
+  // Night starts with Isha, so its time is resolved from that day's prayer cache.
+  { id: "brush-pm", text: "Brush teeth (night)", time: null, prayerTime: "Isha", makeup: false },
 ];
+
+/** Resolve a habit's shown/due time from the cached prayer settings. */
+export function habitScheduleTime(habitId, times) {
+  if (habitId === "brush-pm") return times && times.Isha != null ? times.Isha : null;
+  const habit = HABIT_DEFS.find((h) => h.id === habitId);
+  return habit ? habit.time : null;
+}
 
 export function parseDoneMap(raw) {
   try {
@@ -440,7 +449,7 @@ export function habitExpired(habitId, itemDate, today, nowMins, times) {
  * Never add an already-expired habit (avoids bounce-add → instant miss archive).
  */
 export function shouldAddHabit(habitId, scheduleTime, date, today, nowMins, times, items, habitDone) {
-  if (date !== today) return false;
+  if (date !== today || scheduleTime == null) return false;
   if (habitTodoExists(items, date, habitId) || isDone(habitDone, date, habitId)) return false;
   if (nowMins < toMins(scheduleTime)) return false;
   if (habitExpired(habitId, date, today, nowMins, times)) return false;
@@ -459,7 +468,10 @@ export function releaseHabitsPure(items, habitDone, { date, nowMins, times, habi
   let changed = false;
 
   for (const h of defs) {
-    if (shouldAddHabit(h.id, h.time, date, date, nowMins, times, nextItems, nextDone)) {
+    const scheduleTime = h.prayerTime
+      ? (times && times[h.prayerTime] != null ? times[h.prayerTime] : null)
+      : h.time;
+    if (shouldAddHabit(h.id, scheduleTime, date, date, nowMins, times, nextItems, nextDone)) {
       nextItems = [
         {
           text: h.text,
@@ -467,7 +479,7 @@ export function releaseHabitsPure(items, habitDone, { date, nowMins, times, habi
           kind: "habit",
           habitId: h.id,
           makeup: false,
-          time: h.time,
+          time: scheduleTime,
           date,
         },
         ...nextItems,
@@ -624,9 +636,9 @@ function defaultLabelForArchive(prayer) {
   return String(prayer);
 }
 
-function defaultTimeForArchive(prayer) {
+function defaultTimeForArchive(prayer, times) {
   if (prayer === "brush-am") return "10:00";
-  if (prayer === "brush-pm") return "22:00";
+  if (prayer === "brush-pm") return times && times.Isha != null ? times.Isha : "";
   return "";
 }
 
@@ -659,6 +671,7 @@ export function statusFromVeliAwards(awarded, date, prayer) {
  */
 export function backfillArchiveFromVeli(archiveRows, veliState, opts) {
   const nowISO = (opts && opts.nowISO) || new Date().toISOString();
+  const times = opts && opts.times;
   const awarded = (veliState && veliState.awarded) || {};
   let rows = Array.isArray(archiveRows) ? [...archiveRows] : [];
   const inserted = [];
@@ -694,7 +707,7 @@ export function backfillArchiveFromVeli(archiveRows, veliState, opts) {
         completedAt: existing.completedAt || (status === "on-time" ? middayISO(date) : nowISO),
         rakats: existing.rakats != null ? existing.rakats : FARZ_RAKATS[prayer] || 0,
         text: existing.text || defaultLabelForArchive(prayer),
-        time: existing.time || defaultTimeForArchive(prayer),
+        time: existing.time || defaultTimeForArchive(prayer, times),
       };
       rows = upsertArchiveRow(rows, upgraded);
       inserted.push(upgraded);
@@ -705,7 +718,7 @@ export function backfillArchiveFromVeli(archiveRows, veliState, opts) {
       id: "bf-" + date + "-" + prayer + "-" + Math.random().toString(36).slice(2, 7),
       prayer,
       text: defaultLabelForArchive(prayer),
-      time: defaultTimeForArchive(prayer),
+      time: defaultTimeForArchive(prayer, times),
       date,
       completedAt: status === "on-time" ? middayISO(date) : nowISO,
       status,

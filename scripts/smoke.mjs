@@ -39,6 +39,7 @@ import {
   awardVeliPure,
   recordDone,
   HABIT_DEFS,
+  habitScheduleTime,
   upsertArchiveRow,
   backfillArchiveFromVeli,
   parseVeliAwardKey,
@@ -200,6 +201,26 @@ console.log("\n=== 3) Habits brush: am miss at Dhuhr; pm miss after next Fajr; o
     "must not add brush-am before 10:00"
   );
 
+  // Night brush is keyed to Isha, not the old fixed 22:00 clock time.
+  assert(habitScheduleTime("brush-pm", TIMES) === TIMES.Isha, "brush-pm schedule uses Isha time");
+  assert(!shouldAddHabit("brush-pm", TIMES.Isha, DATE, DATE, 20 * 60, TIMES, [], {}),
+    "must not add brush-pm before Isha"
+  );
+  assert(shouldAddHabit("brush-pm", TIMES.Isha, DATE, DATE, 20 * 60 + 30, TIMES, [], {}),
+    "add brush-pm when Isha is due"
+  );
+  const atIsha = releaseHabitsPure([], {}, { date: DATE, nowMins: 20 * 60 + 30, times: TIMES });
+  assert(atIsha.items.some((it) => it.habitId === "brush-pm" && it.time === TIMES.Isha),
+    "release stores Isha as brush-pm due time"
+  );
+  const beforeIsha = releaseHabitsPure([], {}, { date: DATE, nowMins: 21 * 60, times: { ...TIMES, Isha: "22:00" } });
+  assert(!beforeIsha.items.some((it) => it.habitId === "brush-pm"),
+    "brush-pm does not appear before a later configured Isha"
+  );
+  assert(!releaseHabitsPure([], {}, { date: DATE, nowMins: 23 * 60, times: null }).items.some((it) => it.habitId === "brush-pm"),
+    "brush-pm waits for prayer settings instead of fixed fallback"
+  );
+
   // releaseHabitsPure after Dhuhr with empty list → no phantom miss archive
   const afterDhuhr = releaseHabitsPure([], {}, { date: DATE, nowMins: 14 * 60, times: TIMES });
   assert(
@@ -227,7 +248,7 @@ console.log("\n=== 3) Habits brush: am miss at Dhuhr; pm miss after next Fajr; o
   // Night brush: yesterday survives until Fajr, then misses
   const yest = "2026-10-01";
   let night = releaseHabitsPure(
-    [{ text: "Brush teeth (night)", done: false, kind: "habit", habitId: "brush-pm", time: "22:00", date: yest }],
+    [{ text: "Brush teeth (night)", done: false, kind: "habit", habitId: "brush-pm", time: TIMES.Isha, date: yest }],
     {},
     { date: DATE, nowMins: 5 * 60, times: TIMES }
   );
@@ -236,6 +257,8 @@ console.log("\n=== 3) Habits brush: am miss at Dhuhr; pm miss after next Fajr; o
   assert(night.archived.some((a) => a.prayer === "brush-pm"), "brush-pm miss after next Fajr");
 
   assertIncludes(indexHtml, "!habitExpiredFn(h.id, date)", "index refuses to add expired habits");
+  assertIncludes(indexHtml, 'prayerTime: "Isha"', "index keys brush-pm to Isha");
+  assertIncludes(indexHtml, 'const endName = item.habitId === "brush-pm" ? "Fajr"', "index shows the Fajr expiry boundary");
 }
 
 console.log("\n=== 4) Archive colors + Ledger + Veli idempotent ===");
@@ -443,11 +466,14 @@ console.log("\n=== 6) Archive always on check-off/miss; Veli→archive backfill 
       "salah-ontime:2026-10-02:Fajr": 2,
       "salah-ontime:2026-10-02:Dhuhr": 2,
       "brush-miss:2026-10-02:brush-am": -1,
+      "brush-ontime:2026-10-02:brush-pm": 1,
       "brush-ontime:2026-10-01:brush-pm": 1,
       "brush-miss:2026-10-01:brush-am": -1,
     },
   };
-  const bf = backfillArchiveFromVeli(brokenArchive, veli, { nowISO: DATE + "T15:00:00.000Z" });
+  const bf = backfillArchiveFromVeli(brokenArchive, veli, {
+    nowISO: DATE + "T15:00:00.000Z", times: TIMES
+  });
   assert(bf.inserted.length >= 2, "backfill inserts missing Dhuhr + brush-am");
   assert(
     bf.rows.some((r) => r.prayer === "Dhuhr" && r.date === DATE && r.status === "on-time" && r.rakats === 4),
@@ -456,6 +482,10 @@ console.log("\n=== 6) Archive always on check-off/miss; Veli→archive backfill 
   assert(
     bf.rows.some((r) => r.prayer === "brush-am" && r.date === DATE && r.status === "missed"),
     "backfill adds brush-am miss for today"
+  );
+  assert(
+    bf.rows.some((r) => r.prayer === "brush-pm" && r.time === TIMES.Isha),
+    "backfill uses configured Isha time for brush-pm"
   );
   assert(
     bf.rows.some((r) => r.prayer === "Fajr" && r.date === DATE),
