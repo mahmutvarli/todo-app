@@ -367,9 +367,13 @@
 
     function render() {
       const items = load();
-      listEl.innerHTML = "";
+      const frag = document.createDocumentFragment();
       if (!items.length) {
-        listEl.innerHTML = '<li class="empty">No tasks yet</li>';
+        const empty = document.createElement("li");
+        empty.className = "empty";
+        empty.textContent = "No tasks yet";
+        frag.appendChild(empty);
+        listEl.replaceChildren(frag);
         fillFocus();
         return;
       }
@@ -450,8 +454,9 @@
           focusSel.value = String(i);
         };
         li.append(check, span, tabata, del);
-        listEl.appendChild(li);
+        frag.appendChild(li);
       });
+      listEl.replaceChildren(frag);
       fillFocus();
     }
 
@@ -1257,351 +1262,392 @@
       if (old) localStorage.setItem(KEY, old);
     }
 
+    // ---- Fast path: paint from localStorage before any network ----
+    const __t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
     render();
     setPhase("ready", workSecs());
-    syncPrayerUI();
-    // auto-refresh times daily / on load if location known
-    (function bootPrayers() {
+    // Sync prayer toggles / cached times from localStorage only (no network yet)
+    (function paintPrayerLocal() {
+      const s = loadPrayerSettings();
+      document.getElementById("autoPrayerTodos").checked = !!s.autoTodos;
+      document.getElementById("athanNotify").checked = !!s.notify;
+      document.getElementById("prayerMethod").value = String(s.method || "13");
+      if (s.times && s.lastDate === todayISO()) renderPrayerTimes(s);
+      else if (s.lat == null) statusEl.textContent = "Tap “Use my location” to load athan times.";
+      else statusEl.textContent = "Prayer times ready when online…";
+    })();
+    const __tPaint = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    console.info("[todo-app] local first paint in", Math.round(__tPaint - __t0), "ms (no supabase yet)");
+
+    // Defer network-heavy prayer/habit work until after first paint
+    function deferAfterPaint(fn) {
+      const run = () => { try { fn(); } catch (e) { console.warn(e); } };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => setTimeout(run, 0));
+      } else {
+        setTimeout(run, 0);
+      }
+    }
+    deferAfterPaint(function bootPrayersAndHabits() {
       const s = loadPrayerSettings();
       if (s.lat != null) {
         if (s.lastDate !== todayISO() || !s.times) fetchPrayerTimes();
-        else {
-          renderPrayerTimes(s);
-          releaseDuePrayerTodos();
-        }
+        else releaseDuePrayerTodos();
       }
-    })();
+      try { releaseHabits(); } catch (_) {}
+    });
     setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); }, 15000);
-  </script>
 
-  <script type="module">
-    import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-
-    const SUPABASE_URL = "https://jyvkahjkrtlvreeqdotj.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp5dmthaGprcnRsdnJlZXFkb3RqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5MDQ1OTMsImV4cCI6MjEwNjQ4MDU5M30.HPcuij-6ggjuCOmbfpH4INA0nfy66wYyoxo_EIdRdqI";
-    const APP_ID = "todo-app";
-    const SYNC_KEYS = [
-      "todo-app-v3",
-      "todo-app-prayer-settings-v1",
-      "todo-app-prayer-done-v1",
-      "todo-app-habit-done-v1",
-      "todo-app-athan-notified",
-      "todo-app-ledger-v1",
-      "todo-app-archive-v1",
-    ];
-
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    });
-
-    const emailEl = document.getElementById("authEmail");
-    const hintEl = document.getElementById("authHint");
-    const statusEl = document.getElementById("authStatus");
-    const signInBtn = document.getElementById("signInGoogleBtn");
-    const signOutBtn = document.getElementById("signOutBtn");
-
-    let currentUser = null;
-    let applyingCloud = false;
-    let saveTimer = null;
-    let lastCloudUpdatedAt = null;
-    let syncReady = false;
-    let signedInMutex = Promise.resolve();
-    let signedInRunning = false;
-
-    function setStatus(msg, kind) {
-      if (!statusEl) return;
-      statusEl.textContent = msg || "";
-      statusEl.classList.remove("err", "ok");
-      if (kind) statusEl.classList.add(kind);
-    }
-
-    function redirectTo() {
-      return window.location.origin + window.location.pathname;
-    }
-
-    function collectLocalBlob() {
-      const keys = {};
-      for (const k of SYNC_KEYS) {
-        const v = localStorage.getItem(k);
-        if (v != null) keys[k] = v;
-      }
-      return { version: 1, keys };
-    }
-
-    function localHasData(blob) {
-      return Object.keys(blob.keys || {}).length > 0;
-    }
-
-    function cloudHasData(data) {
-      if (!data || typeof data !== "object") return false;
-      const keys = data.keys;
-      return !!(keys && typeof keys === "object" && Object.keys(keys).length > 0);
-    }
-
-    function applyCloudBlob(data) {
-      if (!data || !data.keys || typeof data.keys !== "object") return;
-      applyingCloud = true;
-      try {
-        for (const k of SYNC_KEYS) {
-          if (Object.prototype.hasOwnProperty.call(data.keys, k)) {
-            const val = data.keys[k];
-            if (val == null) localStorage.removeItem(k);
-            else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
-          }
-        }
-      } finally {
-        applyingCloud = false;
-      }
-      refreshAppUI();
-    }
-
-    function refreshAppUI() {
-      try {
-        if (typeof window.render === "function") window.render();
-        if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
-        if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
-        if (typeof window.renderArchive === "function") window.renderArchive();
-        if (typeof window.renderQadaUI === "function") {
-          const L = typeof window.loadLedger === "function" ? window.loadLedger() : null;
-          if (L) window.renderQadaUI(L);
-        }
-        // Re-draw prayer times from settings if present
-        if (typeof window.loadPrayerSettings === "function" && typeof window.renderPrayerTimes === "function") {
-          const s = window.loadPrayerSettings();
-          if (s && s.times) window.renderPrayerTimes(s);
-        }
-      } catch (e) {
-        console.warn("UI refresh after cloud load:", e);
-      }
-    }
-
-    async function fetchCloudRow(userId) {
-      // Hard cap so a hung auth-lock fetch cannot block the UI for long.
-      // Local data already rendered; timeout keeps using this device's copy.
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      try {
-        const { data, error } = await supabase
-          .from("app_state")
-          .select("data, updated_at")
-          .eq("user_id", userId)
-          .eq("app_id", APP_ID)
-          .abortSignal(controller.signal)
-          .maybeSingle();
-        if (error) throw error;
-        return data;
-      } catch (e) {
-        if (controller.signal.aborted || (e && (e.name === "AbortError" || /aborted|abort/i.test(String(e.message || e))))) {
-          throw new Error("Cloud load timed out after 5s — using this device’s data.");
-        }
-        throw e;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    }
-
-    async function upsertCloud(userId, blob) {
-      const payload = {
-        user_id: userId,
-        app_id: APP_ID,
-        data: blob,
-        updated_at: new Date().toISOString(),
+    // ---- Cloud sync: load local UMD after first paint (zero block on refresh) ----
+    deferAfterPaint(function loadSupabaseAfterPaint() {
+      if (window.__todoCloudBooted) return;
+      window.__todoCloudBooted = true;
+      const src = new URL("supabase.min.js", window.location.href).href;
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = true;
+      s.onload = function () {
+        const tLoaded = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+        console.info("[todo-app] supabase UMD loaded +", Math.round(tLoaded - __t0), "ms from boot");
+        try { bootCloudSync(); }
+        catch (e) { console.error("cloud boot failed", e); }
       };
-      const { data, error } = await supabase
-        .from("app_state")
-        .upsert(payload, { onConflict: "user_id,app_id" })
-        .select("updated_at")
-        .single();
-      if (error) throw error;
-      lastCloudUpdatedAt = data?.updated_at || payload.updated_at;
-      return data;
-    }
-
-    function scheduleCloudSave() {
-      if (!currentUser || !syncReady || applyingCloud) return;
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
-        pushLocalToCloud().catch((e) => {
-          console.warn("Cloud save failed:", e);
-          setStatus("Could not save to cloud: " + (e.message || e), "err");
-        });
-      }, 800);
-    }
-
-    async function pushLocalToCloud() {
-      if (!currentUser) return;
-      const blob = collectLocalBlob();
-      await upsertCloud(currentUser.id, blob);
-      setStatus("Synced to your account", "ok");
-    }
-
-    async function onSignedIn(user) {
-      if (signedInRunning) return;
-      signedInRunning = true;
-      currentUser = user;
-      syncReady = false;
-      updateAuthUI();
-      // Local list already painted from localStorage; cloud is background-only.
-      setStatus("Syncing with your account…");
-      try {
-        const row = await fetchCloudRow(user.id);
-        const localBlob = collectLocalBlob();
-        if (!row || !cloudHasData(row.data)) {
-          if (localHasData(localBlob)) {
-            await upsertCloud(user.id, localBlob);
-            setStatus("Uploaded this device’s data to your account", "ok");
-          } else {
-            setStatus("Signed in — nothing to sync yet", "ok");
-          }
-        } else {
-          // If cloud has data → load cloud (thereafter sync on changes).
-          lastCloudUpdatedAt = row.updated_at;
-          applyCloudBlob(row.data);
-          setStatus("Loaded data from your account", "ok");
+      s.onerror = function () {
+        console.warn("Could not load supabase.min.js — staying local-only");
+        if (document.getElementById("authStatus")) {
+          document.getElementById("authStatus").textContent = "Cloud library unavailable — data stays on this device.";
+          document.getElementById("authStatus").classList.add("err");
         }
-      } catch (e) {
-        console.error(e);
-        const msg = String(e && e.message || e);
-        // Keep whatever localStorage already showed; do not blank the UI.
-        setStatus(/timed out/i.test(msg)
-          ? "Cloud sync timed out — using this device’s data"
-          : ("Cloud sync error: " + msg), "err");
-      } finally {
-        syncReady = true;
-        signedInRunning = false;
-      }
-    }
-
-    /**
-     * Queue cloud pull so only one runs at a time.
-     * Must use setTimeout(0) (macrotask), not queueMicrotask: supabase-js holds an
-     * auth lock during onAuthStateChange/getSession; DB calls started in the same
-     * turn can deadlock and hang until our timeout (~15s before, now 5s).
-     */
-    function queueOnSignedIn(user) {
-      signedInMutex = signedInMutex.then(() => new Promise((resolve) => {
-        setTimeout(() => {
-          Promise.resolve()
-            .then(() => onSignedIn(user))
-            .catch((e) => console.error("onSignedIn failed:", e))
-            .finally(resolve);
-        }, 0);
-      }));
-      return signedInMutex;
-    }
-
-    /** Single boot/sign-in pull scheduler — avoids INITIAL_SESSION + getSession double fetch. */
-    let cloudPullScheduledFor = null;
-    function scheduleCloudPull(user) {
-      if (!user) return;
-      currentUser = user;
-      updateAuthUI();
-      if (cloudPullScheduledFor === user.id) return;
-      cloudPullScheduledFor = user.id;
-      queueOnSignedIn(user);
-    }
-
-    function onSignedOut() {
-      currentUser = null;
-      syncReady = false;
-      lastCloudUpdatedAt = null;
-      cloudPullScheduledFor = null;
-      updateAuthUI();
-      setStatus("");
-    }
-
-    function updateAuthUI() {
-      if (currentUser) {
-        const email = currentUser.email || currentUser.user_metadata?.email || "Signed in";
-        emailEl.hidden = false;
-        emailEl.textContent = email;
-        hintEl.textContent = "Signed in — changes sync to your account. Sign out anytime; local copy stays on this device.";
-        signInBtn.hidden = true;
-        signOutBtn.hidden = false;
-      } else {
-        emailEl.hidden = true;
-        emailEl.textContent = "";
-        hintEl.textContent = "Without login, data stays on this device. Sign in to sync it to your account across devices.";
-        signInBtn.hidden = false;
-        signOutBtn.hidden = true;
-      }
-    }
-
-    signInBtn.addEventListener("click", async () => {
-      setStatus("Opening Google sign-in…");
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: redirectTo() },
-      });
-      if (error) {
-        console.error(error);
-        setStatus(
-          error.message || "Google sign-in failed. Enable the Google provider in Supabase Auth if you have not yet.",
-          "err"
-        );
-      }
+      };
+      document.head.appendChild(s);
     });
 
-    signOutBtn.addEventListener("click", async () => {
-      setStatus("Signing out…");
-      const { error } = await supabase.auth.signOut();
-      if (error) setStatus(error.message || "Sign out failed", "err");
-      else onSignedOut();
-    });
-
-    // Patch localStorage so every app write schedules a cloud save
-    const _setItem = localStorage.setItem.bind(localStorage);
-    const _removeItem = localStorage.removeItem.bind(localStorage);
-    localStorage.setItem = function (key, value) {
-      _setItem(key, value);
-      if (SYNC_KEYS.includes(key)) scheduleCloudSave();
-    };
-    localStorage.removeItem = function (key) {
-      _removeItem(key);
-      if (SYNC_KEYS.includes(key)) scheduleCloudSave();
-    };
-
-    // IMPORTANT: never await DB/auth calls inside this callback (Supabase JS deadlock).
-    // INITIAL_SESSION is ignored here — getSession() below owns the first cloud pull so
-    // we do not double-fetch (which previously left one request hung until the 15s timeout).
-    supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "INITIAL_SESSION") {
+    function bootCloudSync() {
+      const createClient = window.supabase && window.supabase.createClient;
+      if (typeof createClient !== "function") {
+        console.warn("supabase.createClient missing");
         return;
       }
-      if (event === "SIGNED_IN" && session?.user) {
-        // OAuth return or explicit sign-in. Deduped if getSession already scheduled same user.
-        scheduleCloudPull(session.user);
-      } else if (event === "SIGNED_OUT") {
-        cloudPullScheduledFor = null;
-        onSignedOut();
-      } else if (session?.user) {
-        currentUser = session.user;
-        updateAuthUI();
-      } else if (!session) {
-        cloudPullScheduledFor = null;
-        onSignedOut();
+
+      const SUPABASE_URL = "https://jyvkahjkrtlvreeqdotj.supabase.co";
+      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp5dmthaGprcnRsdnJlZXFkb3RqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5MDQ1OTMsImV4cCI6MjEwNjQ4MDU5M30.HPcuij-6ggjuCOmbfpH4INA0nfy66wYyoxo_EIdRdqI";
+      const APP_ID = "todo-app";
+      const SYNC_KEYS = [
+        "todo-app-v3",
+        "todo-app-prayer-settings-v1",
+        "todo-app-prayer-done-v1",
+        "todo-app-habit-done-v1",
+        "todo-app-athan-notified",
+        "todo-app-ledger-v1",
+        "todo-app-archive-v1",
+      ];
+
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+        },
+      });
+
+      const emailEl = document.getElementById("authEmail");
+      const hintEl = document.getElementById("authHint");
+      const statusEl = document.getElementById("authStatus");
+      const signInBtn = document.getElementById("signInGoogleBtn");
+      const signOutBtn = document.getElementById("signOutBtn");
+
+      let currentUser = null;
+      let applyingCloud = false;
+      let saveTimer = null;
+      let lastCloudUpdatedAt = null;
+      let syncReady = false;
+      let signedInMutex = Promise.resolve();
+      let signedInRunning = false;
+
+      function setStatus(msg, kind) {
+        if (!statusEl) return;
+        statusEl.textContent = msg || "";
+        statusEl.classList.remove("err", "ok");
+        if (kind) statusEl.classList.add(kind);
       }
-    });
 
-    // Boot: session first → auth UI; local list already rendered by the classic script.
-    // Cloud pull is deferred (setTimeout 0 inside queueOnSignedIn) and non-blocking.
-    const { data: { session }, error: sessErr } = await supabase.auth.getSession();
-    if (sessErr) console.warn(sessErr);
-    if (session?.user) {
-      scheduleCloudPull(session.user);
-    } else {
-      updateAuthUI();
-    }
+      function redirectTo() {
+        return window.location.origin + window.location.pathname;
+      }
 
-    // Clean OAuth tokens from URL after session is established
-    if (window.location.hash && /access_token|refresh_token|error|code=/.test(window.location.hash + window.location.search)) {
-      history.replaceState(null, "", window.location.pathname + window.location.search.replace(/[?&](code|state)=[^&]*/g, "").replace(/^\?$/, ""));
+      function collectLocalBlob() {
+        const keys = {};
+        for (const k of SYNC_KEYS) {
+          const v = localStorage.getItem(k);
+          if (v != null) keys[k] = v;
+        }
+        return { version: 1, keys };
+      }
+
+      function localHasData(blob) {
+        return Object.keys(blob.keys || {}).length > 0;
+      }
+
+      function cloudHasData(data) {
+        if (!data || typeof data !== "object") return false;
+        const keys = data.keys;
+        return !!(keys && typeof keys === "object" && Object.keys(keys).length > 0);
+      }
+
+      function blobsEqual(a, b) {
+        try {
+          const ak = (a && a.keys) || {};
+          const bk = (b && b.keys) || {};
+          for (const k of SYNC_KEYS) {
+            if ((ak[k] ?? null) !== (bk[k] ?? null)) return false;
+          }
+          return true;
+        } catch (_) { return false; }
+      }
+
+      function applyCloudBlob(data) {
+        if (!data || !data.keys || typeof data.keys !== "object") return;
+        // Never wipe UI while applying: only write keys present in cloud blob.
+        // Skip DOM refresh entirely if local already matches (avoids empty→full flash).
+        const localBefore = collectLocalBlob();
+        if (blobsEqual(localBefore, data)) {
+          return;
+        }
+        applyingCloud = true;
+        try {
+          for (const k of SYNC_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(data.keys, k)) {
+              const val = data.keys[k];
+              if (val == null) localStorage.removeItem(k);
+              else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
+            }
+          }
+        } finally {
+          applyingCloud = false;
+        }
+        refreshAppUI();
+      }
+
+      function refreshAppUI() {
+        try {
+          if (typeof window.render === "function") window.render();
+          if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
+          if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
+          if (typeof window.renderArchive === "function") window.renderArchive();
+          if (typeof window.renderQadaUI === "function") {
+            const L = typeof window.loadLedger === "function" ? window.loadLedger() : null;
+            if (L) window.renderQadaUI(L);
+          }
+          if (typeof window.loadPrayerSettings === "function" && typeof window.renderPrayerTimes === "function") {
+            const s = window.loadPrayerSettings();
+            if (s && s.times) window.renderPrayerTimes(s);
+          }
+        } catch (e) {
+          console.warn("UI refresh after cloud load:", e);
+        }
+      }
+
+      async function fetchCloudRow(userId) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        try {
+          const { data, error } = await supabase
+            .from("app_state")
+            .select("data, updated_at")
+            .eq("user_id", userId)
+            .eq("app_id", APP_ID)
+            .abortSignal(controller.signal)
+            .maybeSingle();
+          if (error) throw error;
+          return data;
+        } catch (e) {
+          if (controller.signal.aborted || (e && (e.name === "AbortError" || /aborted|abort/i.test(String(e.message || e))))) {
+            throw new Error("Cloud load timed out after 5s — using this device’s data.");
+          }
+          throw e;
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      }
+
+      async function upsertCloud(userId, blob) {
+        const payload = {
+          user_id: userId,
+          app_id: APP_ID,
+          data: blob,
+          updated_at: new Date().toISOString(),
+        };
+        const { data, error } = await supabase
+          .from("app_state")
+          .upsert(payload, { onConflict: "user_id,app_id" })
+          .select("updated_at")
+          .single();
+        if (error) throw error;
+        lastCloudUpdatedAt = data?.updated_at || payload.updated_at;
+        return data;
+      }
+
+      function scheduleCloudSave() {
+        if (!currentUser || !syncReady || applyingCloud) return;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+          pushLocalToCloud().catch((e) => {
+            console.warn("Cloud save failed:", e);
+            setStatus("Could not save to cloud: " + (e.message || e), "err");
+          });
+        }, 800);
+      }
+
+      async function pushLocalToCloud() {
+        if (!currentUser) return;
+        const blob = collectLocalBlob();
+        await upsertCloud(currentUser.id, blob);
+        setStatus("Synced to your account", "ok");
+      }
+
+      async function onSignedIn(user) {
+        if (signedInRunning) return;
+        signedInRunning = true;
+        currentUser = user;
+        syncReady = false;
+        updateAuthUI();
+        // Local list already painted; cloud is background-only. Never clear UI while waiting.
+        setStatus("Syncing with your account…");
+        try {
+          const row = await fetchCloudRow(user.id);
+          const localBlob = collectLocalBlob();
+          if (!row || !cloudHasData(row.data)) {
+            if (localHasData(localBlob)) {
+              await upsertCloud(user.id, localBlob);
+              setStatus("Uploaded this device’s data to your account", "ok");
+            } else {
+              setStatus("Signed in — nothing to sync yet", "ok");
+            }
+          } else {
+            lastCloudUpdatedAt = row.updated_at;
+            applyCloudBlob(row.data);
+            setStatus("Loaded data from your account", "ok");
+          }
+        } catch (e) {
+          console.error(e);
+          const msg = String(e && e.message || e);
+          setStatus(/timed out/i.test(msg)
+            ? "Cloud sync timed out — using this device’s data"
+            : ("Cloud sync error: " + msg), "err");
+        } finally {
+          syncReady = true;
+          signedInRunning = false;
+        }
+      }
+
+      function queueOnSignedIn(user) {
+        signedInMutex = signedInMutex.then(() => new Promise((resolve) => {
+          setTimeout(() => {
+            Promise.resolve()
+              .then(() => onSignedIn(user))
+              .catch((e) => console.error("onSignedIn failed:", e))
+              .finally(resolve);
+          }, 0);
+        }));
+        return signedInMutex;
+      }
+
+      let cloudPullScheduledFor = null;
+      function scheduleCloudPull(user) {
+        if (!user) return;
+        currentUser = user;
+        updateAuthUI();
+        if (cloudPullScheduledFor === user.id) return;
+        cloudPullScheduledFor = user.id;
+        queueOnSignedIn(user);
+      }
+
+      function onSignedOut() {
+        currentUser = null;
+        syncReady = false;
+        lastCloudUpdatedAt = null;
+        cloudPullScheduledFor = null;
+        updateAuthUI();
+        setStatus("");
+      }
+
+      function updateAuthUI() {
+        if (currentUser) {
+          const email = currentUser.email || currentUser.user_metadata?.email || "Signed in";
+          emailEl.hidden = false;
+          emailEl.textContent = email;
+          hintEl.textContent = "Signed in — changes sync to your account. Sign out anytime; local copy stays on this device.";
+          signInBtn.hidden = true;
+          signOutBtn.hidden = false;
+        } else {
+          emailEl.hidden = true;
+          emailEl.textContent = "";
+          hintEl.textContent = "Without login, data stays on this device. Sign in to sync it to your account across devices.";
+          signInBtn.hidden = false;
+          signOutBtn.hidden = true;
+        }
+      }
+
+      signInBtn.addEventListener("click", async () => {
+        setStatus("Opening Google sign-in…");
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: redirectTo() },
+        });
+        if (error) {
+          console.error(error);
+          setStatus(
+            error.message || "Google sign-in failed. Enable the Google provider in Supabase Auth if you have not yet.",
+            "err"
+          );
+        }
+      });
+
+      signOutBtn.addEventListener("click", async () => {
+        setStatus("Signing out…");
+        const { error } = await supabase.auth.signOut();
+        if (error) setStatus(error.message || "Sign out failed", "err");
+        else onSignedOut();
+      });
+
+      const _setItem = localStorage.setItem.bind(localStorage);
+      const _removeItem = localStorage.removeItem.bind(localStorage);
+      localStorage.setItem = function (key, value) {
+        _setItem(key, value);
+        if (SYNC_KEYS.includes(key)) scheduleCloudSave();
+      };
+      localStorage.removeItem = function (key) {
+        _removeItem(key);
+        if (SYNC_KEYS.includes(key)) scheduleCloudSave();
+      };
+
+      // Never await DB inside this callback (supabase-js auth lock deadlock).
+      supabase.auth.onAuthStateChange((event, session) => {
+        if (event === "INITIAL_SESSION") return;
+        if (event === "SIGNED_IN" && session?.user) {
+          scheduleCloudPull(session.user);
+        } else if (event === "SIGNED_OUT") {
+          cloudPullScheduledFor = null;
+          onSignedOut();
+        } else if (session?.user) {
+          currentUser = session.user;
+          updateAuthUI();
+        } else if (!session) {
+          cloudPullScheduledFor = null;
+          onSignedOut();
+        }
+      });
+
+      // Session after UMD load — local UI already painted; pull is deferred macrotask.
+      supabase.auth.getSession().then(({ data: { session }, error: sessErr }) => {
+        if (sessErr) console.warn(sessErr);
+        if (session?.user) scheduleCloudPull(session.user);
+        else updateAuthUI();
+        if (window.location.hash && /access_token|refresh_token|error|code=/.test(window.location.hash + window.location.search)) {
+          history.replaceState(null, "", window.location.pathname + window.location.search.replace(/[?&](code|state)=[^&]*/g, "").replace(/^\?$/, ""));
+        }
+      });
     }
   </script>
 
 </body>
-</html>
