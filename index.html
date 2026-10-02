@@ -143,10 +143,36 @@
     .qada-summary { font-size: 0.85rem; color: var(--muted); margin: 8px 0 12px; }
     .qada-summary strong { color: var(--text); }
 
+
+    .auth-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      background: var(--card); border-radius: 14px; padding: 12px 14px;
+      margin-bottom: 14px; border: 1px solid #334155;
+    }
+    .auth-bar .auth-info { flex: 1; min-width: 160px; }
+    .auth-bar .auth-email { display: block; font-weight: 600; font-size: 0.9rem; }
+    .auth-bar .auth-hint { display: block; font-size: 0.78rem; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .auth-bar .auth-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .auth-bar #signInGoogleBtn { white-space: nowrap; }
+    .auth-bar .auth-status-line { width: 100%; font-size: 0.8rem; color: var(--muted); min-height: 0; margin: 0; }
+    .auth-bar .auth-status-line.err { color: var(--danger); }
+    .auth-bar .auth-status-line.ok { color: var(--ok); }
   </style>
 </head>
 <body>
   <h1>Todo + Tabata + Prayers</h1>
+  <div class="auth-bar" id="authBar">
+    <div class="auth-info">
+      <span id="authEmail" class="auth-email" hidden></span>
+      <span id="authHint" class="auth-hint">Without login, data stays on this device. Sign in to sync it to your account across devices.</span>
+    </div>
+    <div class="auth-actions">
+      <button type="button" class="secondary" id="signInGoogleBtn">Sign in with Google</button>
+      <button type="button" class="ghost" id="signOutBtn" hidden>Sign out</button>
+    </div>
+    <p id="authStatus" class="auth-status-line" aria-live="polite"></p>
+  </div>
+
   <div class="tabs">
     <button type="button" id="tab-todo" class="active">Todos</button>
     <button type="button" id="tab-tabata">Tabata</button>
@@ -293,7 +319,7 @@
     </div>
   </section>
 
-  <p class="hint">Data stays on this device (except prayer times fetched from Aladhan).</p>
+  <p class="hint">Without login, data stays on this device. With login, it syncs to your account. Prayer times still come from Aladhan.</p>
 
   <script>
     const KEY = "todo-app-v3";
@@ -1229,5 +1255,283 @@
     })();
     setInterval(() => { releaseDuePrayerTodos(); releaseHabits(); checkAthanNotify(); }, 15000);
   </script>
+
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
+    const SUPABASE_URL = "https://jyvkahjkrtlvreeqdotj.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp5dmthaGprcnRsdnJlZXFkb3RqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5MDQ1OTMsImV4cCI6MjEwNjQ4MDU5M30.HPcuij-6ggjuCOmbfpH4INA0nfy66wYyoxo_EIdRdqI";
+    const APP_ID = "todo-app";
+    const SYNC_KEYS = [
+      "todo-app-v3",
+      "todo-app-prayer-settings-v1",
+      "todo-app-prayer-done-v1",
+      "todo-app-habit-done-v1",
+      "todo-app-athan-notified",
+      "todo-app-ledger-v1",
+      "todo-app-archive-v1",
+    ];
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+
+    const emailEl = document.getElementById("authEmail");
+    const hintEl = document.getElementById("authHint");
+    const statusEl = document.getElementById("authStatus");
+    const signInBtn = document.getElementById("signInGoogleBtn");
+    const signOutBtn = document.getElementById("signOutBtn");
+
+    let currentUser = null;
+    let applyingCloud = false;
+    let saveTimer = null;
+    let lastCloudUpdatedAt = null;
+    let syncReady = false;
+
+    function setStatus(msg, kind) {
+      if (!statusEl) return;
+      statusEl.textContent = msg || "";
+      statusEl.classList.remove("err", "ok");
+      if (kind) statusEl.classList.add(kind);
+    }
+
+    function redirectTo() {
+      return window.location.origin + window.location.pathname;
+    }
+
+    function collectLocalBlob() {
+      const keys = {};
+      for (const k of SYNC_KEYS) {
+        const v = localStorage.getItem(k);
+        if (v != null) keys[k] = v;
+      }
+      return { version: 1, keys };
+    }
+
+    function localHasData(blob) {
+      return Object.keys(blob.keys || {}).length > 0;
+    }
+
+    function cloudHasData(data) {
+      if (!data || typeof data !== "object") return false;
+      const keys = data.keys;
+      return !!(keys && typeof keys === "object" && Object.keys(keys).length > 0);
+    }
+
+    function applyCloudBlob(data) {
+      if (!data || !data.keys || typeof data.keys !== "object") return;
+      applyingCloud = true;
+      try {
+        for (const k of SYNC_KEYS) {
+          if (Object.prototype.hasOwnProperty.call(data.keys, k)) {
+            const val = data.keys[k];
+            if (val == null) localStorage.removeItem(k);
+            else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
+          }
+        }
+      } finally {
+        applyingCloud = false;
+      }
+      refreshAppUI();
+    }
+
+    function refreshAppUI() {
+      try {
+        if (typeof window.render === "function") window.render();
+        if (typeof window.syncPrayerUI === "function") window.syncPrayerUI();
+        if (typeof window.syncLedgerUI === "function") window.syncLedgerUI();
+        if (typeof window.renderArchive === "function") window.renderArchive();
+        if (typeof window.renderQadaUI === "function") {
+          const L = typeof window.loadLedger === "function" ? window.loadLedger() : null;
+          if (L) window.renderQadaUI(L);
+        }
+        // Re-draw prayer times from settings if present
+        if (typeof window.loadPrayerSettings === "function" && typeof window.renderPrayerTimes === "function") {
+          const s = window.loadPrayerSettings();
+          if (s && s.times) window.renderPrayerTimes(s);
+        }
+      } catch (e) {
+        console.warn("UI refresh after cloud load:", e);
+      }
+    }
+
+    async function fetchCloudRow(userId) {
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("data, updated_at")
+        .eq("user_id", userId)
+        .eq("app_id", APP_ID)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    }
+
+    async function upsertCloud(userId, blob) {
+      const payload = {
+        user_id: userId,
+        app_id: APP_ID,
+        data: blob,
+        updated_at: new Date().toISOString(),
+      };
+      const { data, error } = await supabase
+        .from("app_state")
+        .upsert(payload, { onConflict: "user_id,app_id" })
+        .select("updated_at")
+        .single();
+      if (error) throw error;
+      lastCloudUpdatedAt = data?.updated_at || payload.updated_at;
+      return data;
+    }
+
+    function scheduleCloudSave() {
+      if (!currentUser || !syncReady || applyingCloud) return;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        pushLocalToCloud().catch((e) => {
+          console.warn("Cloud save failed:", e);
+          setStatus("Could not save to cloud: " + (e.message || e), "err");
+        });
+      }, 800);
+    }
+
+    async function pushLocalToCloud() {
+      if (!currentUser) return;
+      const blob = collectLocalBlob();
+      await upsertCloud(currentUser.id, blob);
+      setStatus("Synced to your account", "ok");
+    }
+
+    async function onSignedIn(user) {
+      currentUser = user;
+      syncReady = false;
+      updateAuthUI();
+      setStatus("Loading your cloud data…");
+      try {
+        const row = await fetchCloudRow(user.id);
+        const localBlob = collectLocalBlob();
+        if (!row || !cloudHasData(row.data)) {
+          if (localHasData(localBlob)) {
+            await upsertCloud(user.id, localBlob);
+            setStatus("Uploaded this device’s data to your account", "ok");
+          } else {
+            setStatus("Signed in — nothing to sync yet", "ok");
+          }
+        } else {
+          // Prefer newer: compare cloud updated_at vs now is not local; on login load cloud.
+          // If local has data and cloud is older than a local marker we don't have —
+          // requirement: if cloud has data → load cloud (thereafter sync on changes).
+          lastCloudUpdatedAt = row.updated_at;
+          applyCloudBlob(row.data);
+          setStatus("Loaded data from your account", "ok");
+        }
+      } catch (e) {
+        console.error(e);
+        setStatus("Cloud sync error: " + (e.message || e), "err");
+      } finally {
+        syncReady = true;
+      }
+    }
+
+    function onSignedOut() {
+      currentUser = null;
+      syncReady = false;
+      lastCloudUpdatedAt = null;
+      updateAuthUI();
+      setStatus("");
+    }
+
+    function updateAuthUI() {
+      if (currentUser) {
+        const email = currentUser.email || currentUser.user_metadata?.email || "Signed in";
+        emailEl.hidden = false;
+        emailEl.textContent = email;
+        hintEl.textContent = "Signed in — changes sync to your account. Sign out anytime; local copy stays on this device.";
+        signInBtn.hidden = true;
+        signOutBtn.hidden = false;
+      } else {
+        emailEl.hidden = true;
+        emailEl.textContent = "";
+        hintEl.textContent = "Without login, data stays on this device. Sign in to sync it to your account across devices.";
+        signInBtn.hidden = false;
+        signOutBtn.hidden = true;
+      }
+    }
+
+    signInBtn.addEventListener("click", async () => {
+      setStatus("Opening Google sign-in…");
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: redirectTo() },
+      });
+      if (error) {
+        console.error(error);
+        setStatus(
+          error.message || "Google sign-in failed. Enable the Google provider in Supabase Auth if you have not yet.",
+          "err"
+        );
+      }
+    });
+
+    signOutBtn.addEventListener("click", async () => {
+      setStatus("Signing out…");
+      const { error } = await supabase.auth.signOut();
+      if (error) setStatus(error.message || "Sign out failed", "err");
+      else onSignedOut();
+    });
+
+    // Patch localStorage so every app write schedules a cloud save
+    const _setItem = localStorage.setItem.bind(localStorage);
+    const _removeItem = localStorage.removeItem.bind(localStorage);
+    localStorage.setItem = function (key, value) {
+      _setItem(key, value);
+      if (SYNC_KEYS.includes(key)) scheduleCloudSave();
+    };
+    localStorage.removeItem = function (key) {
+      _removeItem(key);
+      if (SYNC_KEYS.includes(key)) scheduleCloudSave();
+    };
+
+    let bootHandled = false;
+    supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        const shouldLoad =
+          event === "SIGNED_IN" ||
+          event === "INITIAL_SESSION" ||
+          (event === "TOKEN_REFRESHED" && !bootHandled);
+        if (shouldLoad && (!currentUser || currentUser.id !== session.user.id || event === "SIGNED_IN" || !bootHandled)) {
+          bootHandled = true;
+          await onSignedIn(session.user);
+        } else {
+          currentUser = session.user;
+          updateAuthUI();
+        }
+      } else if (event === "SIGNED_OUT" || (event === "INITIAL_SESSION" && !session)) {
+        bootHandled = true;
+        onSignedOut();
+      }
+    });
+
+    // Fallback if onAuthStateChange is slow; getSession also picks up hash/query tokens
+    const { data: { session }, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) console.warn(sessErr);
+    if (!bootHandled) {
+      if (session?.user) {
+        bootHandled = true;
+        await onSignedIn(session.user);
+      } else {
+        updateAuthUI();
+      }
+    }
+
+    // Clean OAuth tokens from URL after session is established
+    if (window.location.hash && /access_token|refresh_token|error|code=/.test(window.location.hash + window.location.search)) {
+      history.replaceState(null, "", window.location.pathname + window.location.search.replace(/[?&](code|state)=[^&]*/g, "").replace(/^\?$/, ""));
+    }
+  </script>
+
 </body>
 </html>
