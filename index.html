@@ -341,6 +341,53 @@
     const input = document.getElementById("input");
     const focusSel = document.getElementById("focusTask");
 
+
+    function parseDoneMapJson(raw) {
+      try {
+        const o = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
+        return o && typeof o === "object" && !Array.isArray(o) ? o : {};
+      } catch { return {}; }
+    }
+    /** Union date → id[] maps so cloud never drops local prayer/habit done flags. */
+    function mergeDoneMaps(localRaw, cloudRaw) {
+      const local = parseDoneMapJson(localRaw);
+      const cloud = parseDoneMapJson(cloudRaw);
+      const out = {};
+      for (const src of [local, cloud]) {
+        for (const [date, arr] of Object.entries(src)) {
+          const list = Array.isArray(arr) ? arr : [];
+          out[date] = [...new Set([...(out[date] || []), ...list])];
+        }
+      }
+      return out;
+    }
+    function recordDoneId(doneKey, date, id) {
+      if (!date || !id) return;
+      const map = parseDoneMapJson(localStorage.getItem(doneKey));
+      map[date] = map[date] || [];
+      if (!map[date].includes(id)) map[date].push(id);
+      localStorage.setItem(doneKey, JSON.stringify(map));
+    }
+    /** Drop auto todos already marked done for their date (after cloud restore). */
+    function pruneCompletedAutoTodos() {
+      const prayerDone = parseDoneMapJson(localStorage.getItem("todo-app-prayer-done-v1"));
+      const habitDone = parseDoneMapJson(localStorage.getItem("todo-app-habit-done-v1"));
+      const items = load();
+      const next = items.filter(it => {
+        if (it.kind === "prayer" && it.prayer) {
+          const d = it.date;
+          if (d && Array.isArray(prayerDone[d]) && prayerDone[d].includes(it.prayer)) return false;
+        }
+        if (it.kind === "habit" && it.habitId) {
+          const d = it.date;
+          if (d && Array.isArray(habitDone[d]) && habitDone[d].includes(it.habitId)) return false;
+        }
+        return true;
+      });
+      if (next.length !== items.length) save(next);
+      return next;
+    }
+
     function load() {
       try { return JSON.parse(localStorage.getItem(KEY)) || []; }
       catch { return []; }
@@ -415,13 +462,8 @@
                 L2.makeup = (L2.makeup|0) + r;
                 saveLedger(L2);
               }
-              const doneKey = "todo-app-prayer-done-v1";
-              let doneMap = {};
-              try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
               const d = items[i].date || todayISO();
-              doneMap[d] = doneMap[d] || [];
-              if (items[i].prayer && !doneMap[d].includes(items[i].prayer)) doneMap[d].push(items[i].prayer);
-              localStorage.setItem(doneKey, JSON.stringify(doneMap));
+              recordDoneId("todo-app-prayer-done-v1", d, items[i].prayer);
               items.splice(i, 1);
             }
           } else if (items[i].kind === "habit" && !was && items[i].done) {
@@ -431,13 +473,8 @@
               time: items[i].time,
               date: items[i].date
             }, "on-time");
-            const doneKey = "todo-app-habit-done-v1";
-            let doneMap = {};
-            try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
             const d = items[i].date || todayISO();
-            doneMap[d] = doneMap[d] || [];
-            if (items[i].habitId && !doneMap[d].includes(items[i].habitId)) doneMap[d].push(items[i].habitId);
-            localStorage.setItem(doneKey, JSON.stringify(doneMap));
+            recordDoneId("todo-app-habit-done-v1", d, items[i].habitId);
             items.splice(i, 1);
           }
           save(items); render();
@@ -678,9 +715,7 @@
       // remove completed prayer todos (checked off = gone)
       const before = items.length;
       items = items.filter(it => !(it.kind === "prayer" && it.done));
-      const doneKey = "todo-app-prayer-done-v1";
-      let doneMap = {};
-      try { doneMap = JSON.parse(localStorage.getItem(doneKey) || "{}"); } catch (_) {}
+      const doneMap = parseDoneMapJson(localStorage.getItem("todo-app-prayer-done-v1"));
       const doneToday = new Set(doneMap[date] || []);
       if (current && !prayerTodoExists(items, date, current) && !doneToday.has(current)) {
         items.unshift({
@@ -1487,6 +1522,9 @@
     window.injectDueTodosFromCache = injectDueTodosFromCache;
     window.releaseDuePrayerTodos = releaseDuePrayerTodos;
     window.releaseHabits = releaseHabits;
+    window.mergeDoneMaps = mergeDoneMaps;
+    window.pruneCompletedAutoTodos = pruneCompletedAutoTodos;
+    window.recordDoneId = recordDoneId;
 
     // migrate
     if (!localStorage.getItem(KEY)) {
@@ -1651,12 +1689,19 @@
         applyingCloud = true;
         try {
           for (const k of SYNC_KEYS) {
-            if (Object.prototype.hasOwnProperty.call(data.keys, k)) {
-              const val = data.keys[k];
-              if (val == null) localStorage.removeItem(k);
-              else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
+            if (!Object.prototype.hasOwnProperty.call(data.keys, k)) continue;
+            const val = data.keys[k];
+            // Merge done maps: stale/empty cloud must not undo today's checked-off salah/habits.
+            if (k === "todo-app-prayer-done-v1" || k === "todo-app-habit-done-v1") {
+              const merged = mergeDoneMaps(localStorage.getItem(k), val);
+              localStorage.setItem(k, JSON.stringify(merged));
+              continue;
             }
+            if (val == null) localStorage.removeItem(k);
+            else localStorage.setItem(k, typeof val === "string" ? val : JSON.stringify(val));
           }
+          // Cloud todos may still list a salah that was checked off locally — strip those.
+          pruneCompletedAutoTodos();
         } finally {
           applyingCloud = false;
         }
@@ -1786,6 +1831,8 @@
           try {
             if (typeof window.injectDueTodosFromCache === "function") window.injectDueTodosFromCache();
           } catch (_) {}
+          // Persist merged prayer/habit-done (local ∪ cloud) so other devices keep check-offs
+          try { scheduleCloudSave(); } catch (_) {}
           signedInRunning = false;
         }
       }
